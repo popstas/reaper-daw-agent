@@ -1,0 +1,13 @@
+__pycache__/
+.claude/settings.local.json
+# проекты REAPER и медиа - не в git
+*.wav
+*.mp3
+*.rpp
+*.RPP
+*.rpp-bak
+*.RPP.bak-*
+*.reapeaks
+Media/
+Backups/
+.env
