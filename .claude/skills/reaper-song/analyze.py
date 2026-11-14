@@ -207,6 +207,9 @@ def run_chain(x, fxs, label):
 
 # ---------- отчёт ----------
 
+def mmss(t):
+    t = max(t, 0.0); return f"{int(t // 60)}:{t % 60:04.1f}" if t % 1 >= 0.05 else f"{int(t // 60)}:{int(round(t % 60)):02d}"
+
 def lufs(x):
     v = meter.integrated_loudness(x); return v if np.isfinite(v) else -99.0
 
@@ -229,7 +232,7 @@ def main():
         print(f"\n## {t['name']}  (фейдер {db(t['vol']):+.1f} dB, айтемов {len(t['items'])})")
         n0 = frames(x[:, 0], 0.05); act = np.where(n0 > np.percentile(n0, 95) - 30)[0]
         print(f"сырой: {lufs(x):.1f} LUFS, пик {db(abs(x).max()):+.1f} dBFS, выше 0 dBFS: {int((abs(x[:, 0]) > 1).sum())} сэмплов (во float это не клип)")
-        if len(act): print(f"звук с {act[0] * 0.05:.1f} по {act[-1] * 0.05:.1f} с из {len(x) / SR:.1f}; самые тихие 5% (окна 50 мс) {np.percentile(n0, 5):.1f} dB")
+        if len(act): print(f"звук с {mmss(act[0] * 0.05)} по {mmss(act[-1] * 0.05)} из {mmss(len(x) / SR)}; самые тихие 5% (окна 50 мс) {np.percentile(n0, 5):.1f} dB")
         if not np.allclose(x[:, 0], x[:, 1]):
             print(f"стерео: L {db(np.sqrt(np.mean(x[:, 0] ** 2))):.1f} / R {db(np.sqrt(np.mean(x[:, 1] ** 2))):.1f} dB")
         for it_prev, it in zip(t['items'], t['items'][1:]):
@@ -239,7 +242,7 @@ def main():
             gap = it['pos'] - (it_prev['pos'] + it_prev['len'])
             b2 = db(np.sqrt(np.mean(x[p - 2 * SR:p, 0] ** 2))); a2 = db(np.sqrt(np.mean(x[p:p + 2 * SR, 0] ** 2)))
             dip = ("рядом пауза, провал не важен" if min(lv[0], lv[-1]) < -35 else f"провал {min(lv) - max(lv[0], lv[-1]):+.0f} dB (5 мс окна)")
-            print(f"стык {it['pos']:.2f} с: перекрытие {max(-gap, 0.0) * 1000 + 0.0:.0f} мс, фейды {it_prev['fo'] * 1000:.0f}/{it['fi'] * 1000:.0f} мс; "
+            print(f"стык {mmss(it['pos'])}: перекрытие {max(-gap, 0.0) * 1000 + 0.0:.0f} мс, фейды {it_prev['fo'] * 1000:.0f}/{it['fi'] * 1000:.0f} мс; "
                   f"{dip}; уровень 2 с до/после {b2:.1f}/{a2:.1f}")
         if t['fxon']:
             y, st, sk = run_chain(x, t['fx'], t['name'])
@@ -260,11 +263,23 @@ def main():
         vo = np.pad(outs[voc], ((0, L - len(outs[voc])), (0, 0)))
         print(f"\n## баланс: {voc} громче остального на {lufs(vo) - lufs(others):.1f} LU (ориентир 4-6)")
         vr, gr_ = frames(vo[:, 0], 0.4), frames(others[:, 0], 0.4); sing = vr > np.percentile(vr, 90) - 18
+        # микрофон слышит гитару из комнаты: без голоса сырой mic тише сырой гитары на постоянную величину (связь),
+        # с голосом разница растёт. Пением считаем окна на 10 dB выше связи, иначе пролаз гитары идёт за «тихий голос»
+        gname = next((n for n in raw if n != voc and re.search(r'guit|гитар', n, re.I)), None)
+        if gname:
+            L2 = min(len(raw[voc]), len(raw[gname]))
+            d = frames(raw[voc][:L2, 0], 0.4) - frames(raw[gname][:L2, 0], 0.4)
+            ga = frames(raw[gname][:L2, 0], 0.4) > np.percentile(frames(raw[gname][:L2, 0], 0.4), 90) - 30
+            if ga.sum() > 20:
+                couple = np.percentile(d[ga], 10)
+                bleed = np.zeros(len(vr), bool); bleed[:len(d)] = ga & (d < couple + 10)
+                sing &= ~bleed
+                print(f"пролаз гитары в mic: сырой mic ниже гитары на {-couple:.0f} dB без голоса; без голоса {bleed.mean() * 100:.0f}% времени")
         parts = []
         for s in range(0, len(vr), 50):
             m = sing[s:s + 50]
-            parts.append(f"{s * 0.4:.0f}с:{np.mean(vr[s:s + 50][m] - gr_[s:s + 50][m]):+.1f}" if m.sum() > 5 else f"{s * 0.4:.0f}с:—")
-        print("по 20 с, пока поёт: " + " ".join(parts))
+            parts.append(f"{mmss(s * 0.4)} {np.mean(vr[s:s + 50][m] - gr_[s:s + 50][m]):+.1f}" if m.sum() > 5 else f"{mmss(s * 0.4)} —")
+        print("по 20 с, пока поёт: " + "  ".join(parts))
         sos = butter(4, [5000, 9000], 'bandpass', fs=SR, output='sos')
         full, sib = frames(vo[:, 0], 0.02), frames(sosfilt(sos, vo[:, 0]), 0.02)
         print(f"свистящие (5-9 кГц в пределах 6 dB от всей полосы, до де-эссера): {np.sum((sib - full > -6) & (full > -40)) * 0.02:.1f} с")
@@ -274,7 +289,7 @@ def main():
     if 'limiter' in st:
         l = st['limiter']; print(f"лимитер {l['thr']:g}/{l['ceil']:g} (подъём {l['gain']:+.1f} dB): режет пики {l['active']:.1f}% времени, p99 {l['p99']:.1f} dB")
     stl = [lufs(out[i:i + 3 * SR]) for i in range(0, max(L - 3 * SR, 1), SR)]
-    print("short-term 3 с, по 10 с: " + " ".join(f"{i * 10}с:{np.mean([v for v in stl[i * 10:i * 10 + 10] if v > -90] or [-99]):.0f}" for i in range((len(stl) + 9) // 10)))
+    print("short-term 3 с, по 10 с: " + "  ".join(f"{mmss(i * 10)} {np.mean([v for v in stl[i * 10:i * 10 + 10] if v > -90] or [-99]):.0f}" for i in range((len(stl) + 9) // 10)))
     if voc and len(outs) > 1:
         bands = [(40, 100), (100, 250), (250, 500), (500, 1000), (1000, 2000), (2000, 4000), (4000, 8000), (8000, 16000)]
         def be(v): f, P = welch(v[:, 0], SR, nperseg=8192); return [10 * np.log10(np.sum(P[(f >= lo) & (f < hi)]) + 1e-20) for lo, hi in bands]
