@@ -17,7 +17,21 @@ if reaper.IsProjectDirty(0) == 1 then error("в проекте несохран�
 out("project", path)
 
 reaper.Undo_BeginBlock()
+local function addfx(a)
+  -- a = {трек, имя для TrackFX_AddByName ("JS:guitar/chorus"), после какого FX (подстрока) или nil}
+  local tr = track(a[1])
+  local idx = reaper.TrackFX_AddByName(tr, a[2], false, -1)
+  if idx < 0 then error("FX не найден: " .. a[2]) end
+  if a[3] then
+    local _, after = fx(tr, a[3])
+    if after + 1 ~= idx then reaper.TrackFX_CopyToTrack(tr, idx, tr, after + 1, true); idx = after + 1 end
+  end
+  local _, nm = reaper.TrackFX_GetFXName(tr, idx, "")
+  out("addfx", a[1], nm, "позиция " .. (idx + 1))
+  return tr, idx
+end
 local ok, err = pcall(function()
+  for _, a in ipairs(A.addfx or {}) do addfx(a) end
   for _, s in ipairs(A.set) do
     local tr, k = fx(s[1], s[2])
     local p = tonumber(s[3]) or param(tr, k, s[3])

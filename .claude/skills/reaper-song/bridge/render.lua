@@ -13,8 +13,26 @@ local function trackinfo(tr, key, v)
   reaper.SetMediaTrackInfo_Value(tr, key, v)
 end
 
+local function addfx(a)
+  -- a = {трек, имя для TrackFX_AddByName ("JS:guitar/chorus"), после какого FX (подстрока) или nil}
+  local tr = track(a[1])
+  local idx = reaper.TrackFX_AddByName(tr, a[2], false, -1)
+  if idx < 0 then error("FX не найден: " .. a[2]) end
+  if a[3] then
+    local _, after = fx(tr, a[3])
+    if after + 1 ~= idx then reaper.TrackFX_CopyToTrack(tr, idx, tr, after + 1, true); idx = after + 1 end
+  end
+  local _, nm = reaper.TrackFX_GetFXName(tr, idx, "")
+  out("addfx", a[1], nm, "позиция " .. (idx + 1))
+  return tr, idx
+end
 local ok, err = pcall(function()
+  for _, a in ipairs(A.addfx or {}) do
+    local tr, idx = addfx(a)
+    push(function() reaper.TrackFX_Delete(tr, idx) end)
+  end
   for _, n in ipairs(A.solo) do trackinfo(track(n), "I_SOLO", 1) end
+  for _, m in ipairs(A.mute or {}) do trackinfo(track(m[1]), "B_MUTE", m[2]); out("mute", m[1], m[2]) end
   if A.nomaster then trackinfo(reaper.GetMasterTrack(0), "I_FXEN", 0) end
   for _, b in ipairs(A.bypass) do
     local tr, i = fx(b[1], b[2])

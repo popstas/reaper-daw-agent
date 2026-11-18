@@ -5,6 +5,8 @@
    mic/1175#2:1=-14     второе совпадение FX на треке
    guitar/vol=-4        фейдер, dB
    mic/itemvol=-8       громкость всех айтемов трека, dB (до цепочки)
+   mic/mute=1           заглушить трек (0 - включить)
+Пробел в имени трека писать как _: "mic_with_guitar/mute=0".
    master/MGA_JSLimiterST:1=-4.5
 FX - подстрока строки <JS ...>/<VST ...>. Копия zz-variant.rpp удаляется сразу после прогона.
 Без --full печатает только ключевые строки отчёта."""
@@ -37,7 +39,7 @@ def track_range(lines, bl, name):
         if lines[st].strip().startswith("<TRACK"):
             for j in range(st + 1, en):
                 if lines[j].strip().startswith("NAME "):
-                    if lines[j].strip()[5:].strip('"') == name:
+                    if lines[j].strip()[5:].strip('"') in (name, name.replace("_", " ")):
                         return st, en
                     break
     sys.exit(f"нет трека {name}")
@@ -66,6 +68,14 @@ def apply(lines, edit):
         if not n:
             sys.exit(f"нет айтемов у {m[1]}")
         return
+    m = re.fullmatch(r"([^/]+)/mute=([01])", edit)
+    if m:
+        st, en = track_range(lines, bl, m[1])
+        for j in range(st, en):
+            if lines[j].strip().startswith("MUTESOLO "):
+                lines[j] = set_tokens(lines[j], 2, m[2])
+                return
+        sys.exit(f"нет MUTESOLO у {m[1]}")
     m = re.fullmatch(r"([^/]+)/vol=(-?[\d.]+)", edit)
     if m:
         st, en = track_range(lines, bl, m[1])
