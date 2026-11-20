@@ -63,7 +63,7 @@ lua=$(mktemp); trap 'rm -f "$lua"' EXIT
   for s in "${vol[@]+"${vol[@]}"}"; do echo "table.insert(A.vol, {$(q "${s%%=*}"), ${s#*=}})"; done
   for s in "${itemvol[@]+"${itemvol[@]}"}"; do echo "table.insert(A.itemvol, {$(q "${s%%=*}"), ${s#*=}})"; done
   if [ -n "$proj" ]; then echo "A.proj = $(q "$proj")"; cat "$DIR/bridge/select.lua"; fi
-  cat "$DIR/bridge/render.lua"
+  cat "$DIR/bridge/temp.lua" "$DIR/bridge/render.lua"
 } > "$lua"
 
 res=$(bash "$DIR/bridge/bridge.sh" -t 900 "$lua") || { echo "$res"; exit 1; }
