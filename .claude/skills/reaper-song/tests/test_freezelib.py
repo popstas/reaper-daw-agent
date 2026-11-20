@@ -85,3 +85,11 @@ def test_sets():
     assert MODELED == frozenset({'sstillwell/hpflpf', 'sstillwell/rbj4eq', 'sstillwell/1175', 'Liteon/presenceeq',
                                  'popstas/guitar_noise_gate.jsfx', 'loser/MGA_JSLimiterST'})
     assert MINOR == ('ReaVerb', 'Liteon/deesser')
+
+
+def test_find_rpp_skips_variant_copies(tmp_path):
+    import os, time
+    from freezelib import find_rpp
+    (tmp_path / 'song.rpp').write_text('x'); time.sleep(0.01)
+    (tmp_path / 'zz-variant-1.rpp').write_text('x')
+    assert os.path.basename(find_rpp(str(tmp_path))) == 'song.rpp'

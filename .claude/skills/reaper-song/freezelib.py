@@ -183,7 +183,9 @@ def calib_key(rpp_text):
 
 def find_rpp(folder, rpp=None):
     if rpp: return rpp if os.path.isabs(rpp) else os.path.join(folder, rpp)
-    return max(glob.glob(os.path.join(folder, '*.rpp')) + glob.glob(os.path.join(folder, '*.RPP')), key=os.path.getmtime)
+    cands = [f for f in glob.glob(os.path.join(folder, '*.rpp')) + glob.glob(os.path.join(folder, '*.RPP'))
+             if not os.path.basename(f).startswith('zz-variant')]   # копии variants.py не подменяют проект
+    return max(cands, key=os.path.getmtime)
 
 
 def read_rpp(path):

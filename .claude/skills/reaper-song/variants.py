@@ -8,12 +8,18 @@
    mic/mute=1           заглушить трек (0 - включить)
 Пробел в имени трека писать как _: "mic_with_guitar/mute=0".
    master/MGA_JSLimiterST:1=-4.5
-FX - подстрока строки <JS ...>/<VST ...>. Копия zz-variant.rpp удаляется сразу после прогона.
+FX - подстрока строки <JS ...>/<VST ...>. Копии zz-variant-<n>.rpp удаляются сразу после прогона.
+Варианты идут параллельно (до числа ядер - 2), вывод - в порядке аргументов.
+--target LUFS - в каждом варианте подобрать порог MGA_JSLimiterST мастера под прогноз рендера.
+Правка FX до точки актуальной заморозки (или itemvol такого трека) - отказ: модель её не видит, проверять рендером.
 Без --full печатает только ключевые строки отчёта."""
-import argparse, glob, os, re, subprocess, sys
+import argparse, concurrent.futures, glob, os, re, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import freezelib
 
 DIR = os.path.dirname(os.path.abspath(__file__))
-KEY = re.compile(r"^(#|## )|после цепочки|^1175|гейт|лимитер|баланс|мастер")
+KEY = re.compile(r"^(#|## )|после цепочки|^1175|гейт|лимитер|баланс|мастер|заморожено|устарела|нет заморозки|поправк|рендер ≈|порог лимитера под|недостижима")
 
 
 def blocks(lines):
@@ -103,26 +109,77 @@ def apply(lines, edit):
     sys.exit(f"нет FX {m[2]} на {m[1]}")
 
 
-ap = argparse.ArgumentParser()
-ap.add_argument("dir"); ap.add_argument("--rpp"); ap.add_argument("--full", action="store_true")
-ap.add_argument("variants", nargs="+")
-a = ap.parse_args()
-d = os.path.abspath(a.dir)
-src = a.rpp or max(glob.glob(os.path.join(d, "*.rpp")) + glob.glob(os.path.join(d, "*.RPP")), key=os.path.getmtime)
-copy = os.path.join(d, "zz-variant.rpp")
-for v in a.variants:
+def check_edit(rpp_text, folder, edit):
+    """Текст отказа, если правка стоит до точки актуальной заморозки (модель её не увидит), иначе None."""
+    m = re.fullmatch(r"([^/]+)/itemvol=(-?[\d.]+)", edit)
+    if m:
+        tname, sub, n = m[1], None, 0
+    else:
+        m = re.fullmatch(r"([^/]+)/(.+?)(?:#(\d+))?:(\d+)=(\S+)", edit)
+        if not m or "/vol=" in edit or "/mute=" in edit:
+            return None
+        tname, sub, n = m[1], m[2], int(m[3] or 1)
+    t = next((t for t in freezelib.split_tracks(rpp_text) if t["name"] in (tname, tname.replace("_", " "))), None)
+    if t is None:
+        return None
+    e = next((e for e in freezelib.plan(rpp_text) if e["index"] == t["index"]), None)
+    if e is None or freezelib.freeze_status(folder, e) != "ok":
+        return None
+    if sub is None:
+        return f"{edit}: до заморозки ({e['after']}), проверять render.sh --itemvol"
+    for i, fx in enumerate(freezelib.track_fx(t["text"])):
+        head = fx["text"].split("\n")[1].strip()
+        if (head.startswith("<JS ") or head.startswith("<VST ")) and sub in head:
+            n -= 1
+            if n == 0:
+                return f"{edit}: до заморозки ({e['after']}), проверять render.sh --set" if i <= e["point"] else None
+    return None
+
+
+def run_variant(n, v, src, d, target, full):
+    """Вывод одного варианта: отказ, ошибка правки или (ключевые) строки analyze.py по копии zz-variant-<n>.rpp."""
     with open(src, encoding="utf-8", newline="") as f:
         lines = f.readlines()
     if v != "base":
-        for e in v.split():
-            apply(lines, e)
-    print(f"=== {v}", flush=True)
+        text = "".join(lines)
+        refused = [r for r in (check_edit(text, d, e) for e in v.split()) if r]
+        if refused:
+            return "\n".join(refused)
+        try:
+            for e in v.split():
+                apply(lines, e)
+        except SystemExit as ex:
+            return f"ошибка: {ex}"
+    copy = os.path.join(d, f"zz-variant-{n}.rpp")
     try:
         with open(copy, "w", encoding="utf-8", newline="") as f:
             f.writelines(lines)
-        r = subprocess.run(["uv", "run", "-q", os.path.join(DIR, "analyze.py"), "--rpp", copy, d],
-                           capture_output=True, text=True)
+        cmd = ["uv", "run", "-q", os.path.join(DIR, "analyze.py"), "--rpp", copy, d]
+        if target is not None:
+            cmd += ["--target", str(target)]
+        r = subprocess.run(cmd, capture_output=True, text=True)
     finally:
-        os.remove(copy)
+        if os.path.exists(copy):
+            os.remove(copy)
     out = r.stdout + r.stderr
-    print(out if a.full else "\n".join(l for l in out.splitlines() if KEY.search(l)), flush=True)
+    return out if full else "\n".join(l for l in out.splitlines() if KEY.search(l))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("dir"); ap.add_argument("--rpp"); ap.add_argument("--full", action="store_true")
+    ap.add_argument("--target", type=float, help="подобрать порог лимитера мастера под прогноз рендера, LUFS")
+    ap.add_argument("variants", nargs="+")
+    a = ap.parse_args()
+    d = os.path.abspath(a.dir)
+    src = freezelib.find_rpp(d, a.rpp)
+    workers = min(len(a.variants), max(1, (os.cpu_count() or 1) - 2))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(run_variant, n, v, src, d, a.target, a.full) for n, v in enumerate(a.variants, 1)]
+        for v, f in zip(a.variants, futs):
+            print(f"=== {v}", flush=True)
+            print(f.result(), flush=True)
+
+
+if __name__ == "__main__":
+    main()

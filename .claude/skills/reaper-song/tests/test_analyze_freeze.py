@@ -37,3 +37,21 @@ def test_freeze_length_mismatch(project):
     write_freeze(project, 1, pink(-16, seconds=9))
     out, js = run(project)
     assert js['master_out'] > -70
+
+
+def test_short_term_fast_matches_pyloudnorm():
+    import numpy as np, pyloudnorm as pyln
+    x = np.concatenate([pink(-20, seconds=6), pink(-30, seconds=6, seed=3)])
+    st = analyze.short_term(x)
+    m = pyln.Meter(analyze.SR)
+    for i in (0, 2, 7):
+        assert abs(st[i] - m.integrated_loudness(x[i * analyze.SR:(i + 3) * analyze.SR])) < 0.3
+
+
+def test_fast_lufs_matches_pyloudnorm():
+    import numpy as np, pyloudnorm as pyln
+    m = pyln.Meter(analyze.SR)
+    quiet = np.concatenate([pink(-20, seconds=5), pink(-45, seconds=5, seed=3), pink(-80, seconds=3, seed=5)])
+    for x in (pink(-20), pink(-14, seconds=9), quiet):
+        assert abs(analyze.lufs_fast(x) - m.integrated_loudness(x)) < 0.005
+    assert analyze.lufs_fast(np.zeros((analyze.SR, 2))) == -99.0

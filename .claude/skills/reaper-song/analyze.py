@@ -236,8 +236,36 @@ def run_chain(x, fxs, label):
 def mmss(t):
     t = max(t, 0.0); return f"{int(t // 60)}:{t % 60:04.1f}" if t % 1 >= 0.05 else f"{int(t // 60)}:{int(round(t % 60)):02d}"
 
+KB = ([1.5351828863637502, -2.691804030199196, 1.198426263333146], [1.0, -1.6906995865986896, 0.7325047060963897],
+      [0.9950442970178917, -1.9900885940357833, 0.9950442970178917], [1.0, -1.990076284018423, 0.9901009040531438])
+# K-фильтр - коэффициенты pyloudnorm.Meter(48000), чтобы цифры совпадали с прежними замерами модели
+
+def kfilter(x):
+    return lfilter(KB[2], KB[3], lfilter(KB[0], KB[1], x, axis=0), axis=0)
+
+def lufs_fast(x):
+    """Integrated LUFS по BS.1770-4 с разбиением на блоки как в pyloudnorm (400 мс, шаг 100 мс, гейты -70 и -10 LU),
+    но суммы блоков - через cumsum, без цикла по блокам."""
+    n = int(0.4 * SR)
+    if len(x) < n: return -99.0
+    c = np.concatenate([[0.0], np.cumsum((kfilter(x) ** 2).sum(1))])
+    j = np.arange(int(np.round((len(x) / SR - 0.4) / 0.1)) + 1)
+    lo = np.minimum((0.4 * j * 0.25 * SR).astype(int), len(x)); hi = np.minimum((0.4 * (j * 0.25 + 1) * SR).astype(int), len(x))
+    p = (c[hi] - c[lo]) / n
+    lv = -0.691 + 10 * np.log10(np.maximum(p, 1e-20)); g = lv >= -70
+    if not g.any(): return -99.0
+    rel = -0.691 + 10 * np.log10(p[g].mean()) - 10
+    g2 = (lv > -70) & (lv > rel)
+    return float(-0.691 + 10 * np.log10(p[g2].mean())) if g2.any() else -99.0
+
 def lufs(x):
-    v = meter.integrated_loudness(x); return v if np.isfinite(v) else -99.0
+    return lufs_fast(x)
+
+def short_term(x, win=3.0, hop=1.0):
+    """Short-term громкость BS.1770 (K-фильтр, без гейта) в окнах win с шагом hop: одна фильтрация вместо LUFS на окно."""
+    c = np.concatenate([[0.0], np.cumsum((kfilter(x) ** 2).sum(1))]); n, h = int(win * SR), int(hop * SR)
+    st = np.arange(0, max(len(x) - n, 1), h); e = np.minimum(st + n, len(x))
+    return -0.691 + 10 * np.log10(np.maximum((c[e] - c[st]) / np.maximum(e - st, 1), 1e-20))
 
 def frames(x, w):
     n = int(w * SR); k = len(x) // n; return db(np.sqrt((x[:k * n].reshape(k, n) ** 2).mean(1)))
@@ -386,7 +414,7 @@ def main():
         r = solve_threshold(mix, mfx, a.target, moff); print(r['note'])
     if 'limiter' in st:
         l = st['limiter']; print(f"лимитер {l['thr']:g}/{l['ceil']:g} (подъём {l['gain']:+.1f} dB): режет пики {l['active']:.1f}% времени, p99 {l['p99']:.1f} dB")
-    stl = [lufs(out[i:i + 3 * SR]) for i in range(0, max(L - 3 * SR, 1), SR)]
+    stl = list(short_term(out))
     print("short-term 3 с, по 10 с: " + "  ".join(f"{mmss(i * 10)} {np.mean([v for v in stl[i * 10:i * 10 + 10] if v > -90] or [-99]):.0f}" for i in range((len(stl) + 9) // 10)))
     if voc and len(outs) > 1:
         bands = [(40, 100), (100, 250), (250, 500), (500, 1000), (1000, 2000), (2000, 4000), (4000, 8000), (8000, 16000)]
