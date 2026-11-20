@@ -242,6 +242,56 @@ def lufs(x):
 def frames(x, w):
     n = int(w * SR); k = len(x) // n; return db(np.sqrt((x[:k * n].reshape(k, n) ** 2).mean(1)))
 
+DEFAULT_MASTER = 0.5   # рендер громче модели: ReaVerb, де-эссер, разница портов (14-18.11: +0.3...+0.7)
+
+def load_calib(folder, rpp_text):
+    """Поправки рендер - модель из calib.json ({} если нет или устарели) и строка отчёта."""
+    c = freezelib.load_json(folder, 'calib.json')
+    fix = f'мастер {DEFAULT_MASTER:+.1f} по умолчанию'
+    if not c: return {}, f'поправки нет - render.sh --stems --calib (рендер «до» со стемами); {fix}'
+    if c.get('key') != freezelib.calib_key(rpp_text):
+        return {}, f'поправка устарела - рендер «до» со стемами (render.sh --stems --calib); {fix}'
+    tm = c.get('time', ''); tm = f"{tm[8:10]}.{tm[5:7]} {tm[11:16]}" if len(tm) >= 16 else tm
+    parts = [f"{n} {v:+.1f}" for n, v in (c.get('tracks') or {}).items()]
+    m = c.get('master')
+    return c, f"поправка по рендеру до ({tm}): " + ', '.join(parts) + (f"; мастер {m:+.1f}" if m is not None else f'; {fix}')
+
+def solve_threshold(mix, mfx, target, offset):
+    """Порог первого активного MGA_JSLimiterST мастера, при котором прогноз рендера (модель + offset) = target ± 0.1.
+    Ниже порог - громче. Бисекция в [-30, 0]."""
+    idx = next((i for i, f in enumerate(mfx) if not f['bypass'] and f['name'] == 'loser/MGA_JSLimiterST'), None)
+    if idx is None: return dict(ok=False, thr=None, model=None, pred=None, note='нет MGA_JSLimiterST на мастере')
+    def ev(thr):
+        p = list(mfx[idx]['p']) or ['0']; p[0] = f'{thr:g}'
+        fx = mfx[:idx] + [dict(mfx[idx], p=p)] + mfx[idx + 1:]
+        m = lufs(run_chain(mix, fx, 'master')[0]); return m, m + offset
+    # секущая внутри вилки от текущего порога (отдача лимитера почти линейна: -1 dB порога = +1 dB), иначе бисекция
+    pts = {}
+    def at(t):
+        t = round(min(0.0, max(-30.0, t)), 3)
+        if t not in pts: pts[t] = ev(t)
+        return t, pts[t][0], pts[t][1]
+    t, m, pr = at(num(mfx[idx]['p'], 0, -8))
+    for _ in range(12):
+        if abs(pr - target) <= 0.05: break
+        if t == -30 and pr < target: return dict(ok=False, thr=t, model=m, pred=pr, note=f'цель недостижима: при пороге -30 прогноз {pr:.1f}')
+        if t == 0 and pr > target: return dict(ok=False, thr=t, model=m, pred=pr, note=f'цель недостижима: при пороге 0 прогноз {pr:.1f}')
+        loud = [k for k, v in pts.items() if v[1] > target]; quiet = [k for k, v in pts.items() if v[1] < target]
+        if loud and quiet:
+            a_, b_ = max(loud), min(quiet); pa, pb = pts[a_][1], pts[b_][1]
+            nt = a_ + (b_ - a_) * (pa - target) / (pa - pb)
+            if not a_ < nt < b_ or abs(nt - t) < 1e-3: nt = (a_ + b_) / 2
+        else:
+            nt = t + (pr - target)
+        t, m, pr = at(nt)
+    # порог печатается с десятыми: круглое значение, а если оно уводит от цели - ближайшее из соседних
+    t1, m, pr = at(round(t, 1))
+    if abs(pr - target) > 0.1:
+        t1, m, pr = min((at(round(t, 1) + d) for d in (-0.1, 0.1)), key=lambda r: abs(r[2] - target))
+    thr = round(t1, 1)
+    return dict(ok=abs(pr - target) <= 0.1, thr=thr, model=m, pred=pr,
+                note=f"порог лимитера под {target:.1f} LUFS: {thr:.1f} (модель {m:.1f}, поправка {offset:+.1f}, прогноз {pr:.1f})")
+
 def report_raw(t, x):
     """Сырой сигнал трека (айтемы до цепочки): уровень, где звук, стерео, стыки айтемов."""
     n0 = frames(x[:, 0], 0.05); act = np.where(n0 > np.percentile(n0, 95) - 30)[0]
@@ -263,6 +313,8 @@ def main():
     global meter
     ap = argparse.ArgumentParser(); ap.add_argument('dir'); ap.add_argument('--rpp'); ap.add_argument('--wav')
     ap.add_argument('--json', help='записать уровни треков и мастера в JSON')
+    ap.add_argument('--target', type=float, help='подобрать порог MGA_JSLimiterST мастера под прогноз рендера, LUFS')
+    ap.add_argument('--no-calib', action='store_true', help='не применять calib.json')
     a = ap.parse_args(); meter = pyln.Meter(SR)
     path = freezelib.find_rpp(a.dir, a.rpp); rpp = os.path.basename(path)
     text = freezelib.read_rpp(path)
@@ -270,6 +322,9 @@ def main():
     plan = {e['index']: e for e in freezelib.plan(text)}
     length = model_length(tracks, a.dir, plan)
     print(f"# {rpp}")
+    calib, cnote = ({}, f'без поправки (--no-calib), мастер {DEFAULT_MASTER:+.1f} по умолчанию') if a.no_calib else load_calib(a.dir, text)
+    print(cnote)
+    toff = calib.get('tracks') or {}
     outs, raw = {}, {}
     for t in tracks:
         if t['mute']: print(f"## {t['name']}: заглушен, пропущен"); continue
@@ -286,7 +341,7 @@ def main():
             y, st, sk = run_chain(sig, chain, t['name'])
         else:
             y, st, sk = sig, {}, ['FX выключены']
-        y = y * t['vol']; outs[t['name']] = y
+        y = y * t['vol'] * 10 ** (toff.get(t['name'], 0) / 20); outs[t['name']] = y
         print(f"после цепочки и фейдера: {lufs(y):.1f} LUFS" + (f"; не моделируется: {', '.join(sk)}" if sk else ''))
         if 'gate' in st:
             g = st['gate']; print(f"гейт {g['thr']}: открыт {g['open_pct']:.0f}% времени, открытий {g['openings']}; HF: {g['hf']}, Top: {g['top']:g} Гц")
@@ -322,8 +377,13 @@ def main():
         full, sib = frames(vo[:, 0], 0.02), frames(sosfilt(sos, vo[:, 0]), 0.02)
         print(f"свистящие (5-9 кГц в пределах 6 dB от всей полосы, до де-эссера): {np.sum((sib - full > -6) & (full > -40)) * 0.02:.1f} с")
     out, st, sk = run_chain(mix, mfx, 'master')
+    moff = calib.get('master'); msrc = 'по рендеру до'
+    if moff is None: moff, msrc = DEFAULT_MASTER, 'по умолчанию'
+    pred = lufs(out) + moff
     print(f"\n## мастер: до цепочки {lufs(mix):.1f} LUFS, пик {db(abs(mix).max()):+.1f}; на выходе {lufs(out):.1f} LUFS, пик {db(abs(out).max()):+.1f} dBFS"
-          + (f"; не моделируется: {', '.join(sk)}" if sk else ''))
+          + (f"; не моделируется: {', '.join(sk)}" if sk else '') + f"; рендер ≈ {pred:.1f} (поправка {moff:+.1f} {msrc})")
+    if a.target is not None:
+        r = solve_threshold(mix, mfx, a.target, moff); print(r['note'])
     if 'limiter' in st:
         l = st['limiter']; print(f"лимитер {l['thr']:g}/{l['ceil']:g} (подъём {l['gain']:+.1f} dB): режет пики {l['active']:.1f}% времени, p99 {l['p99']:.1f} dB")
     stl = [lufs(out[i:i + 3 * SR]) for i in range(0, max(L - 3 * SR, 1), SR)]
@@ -337,7 +397,7 @@ def main():
     if a.json:
         with open(a.json, 'w', encoding='utf-8') as f:
             json.dump(dict(tracks={n: dict(lufs=round(lufs(v), 3)) for n, v in outs.items()}, master_in=round(lufs(mix), 3),
-                           master_out=round(lufs(out), 3), pred=None), f, ensure_ascii=False)
+                           master_out=round(lufs(out), 3), pred=round(pred, 3)), f, ensure_ascii=False)
 
 if __name__ == '__main__':
     main()

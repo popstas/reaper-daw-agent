@@ -14,7 +14,7 @@ def test_frozen_guitar_uses_wav(project):
     out0, js0 = run(copy_project(project))
     assert js['tracks']['guitar']['lufs'] > js0['tracks']['guitar']['lufs'] + 3
     assert 'нет заморозки - freeze.sh' in out0
-    assert js['pred'] is None and js['master_out'] > js['master_in'] - 20
+    assert js['master_out'] > js['master_in'] - 20
 
 
 def test_stale_freeze_reported(project):
