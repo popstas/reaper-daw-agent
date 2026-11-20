@@ -239,3 +239,81 @@ RPP = '''<REAPER_PROJECT 0.1 "7.85/win64" 1763700000
 @pytest.fixture
 def rpp_text():
     return RPP
+
+
+# ---------- проект на диске для analyze.py / variants.py ----------
+import datetime, glob, json, shutil, subprocess, tempfile
+import numpy as np, soundfile as sf
+import freezelib
+
+SR = 48000
+
+
+def pink(rms_db, seconds=6, ch=2, seed=1):
+    """Розовый шум с заданным RMS (dBFS) каждого канала."""
+    rng = np.random.default_rng(seed + ch * 100 + int(seconds * 10))
+    n = int(seconds * SR)
+    X = np.fft.rfft(rng.standard_normal((n, ch)), axis=0)
+    f = np.fft.rfftfreq(n, 1 / SR); f[0] = f[1]
+    x = np.fft.irfft(X / np.sqrt(f)[:, None], n=n, axis=0)
+    return x / np.sqrt(np.mean(x ** 2, axis=0)) * 10 ** (rms_db / 20)
+
+
+def rpp_path(folder):
+    return freezelib.find_rpp(folder)
+
+
+def rpp(folder):
+    with open(rpp_path(folder), encoding='utf-8', newline='') as f: return f.read()
+
+
+def edit_rpp(folder, old, new):
+    t = rpp(folder); assert old in t, old
+    with open(rpp_path(folder), 'w', encoding='utf-8', newline='') as f: f.write(t.replace(old, new))
+
+
+def edit_rpp_master_threshold(folder, thr):
+    t = rpp(folder)
+    i = t.index('<JS loser/MGA_JSLimiterST'); s = t.index('\n', i) + 1; e = t.index('\r\n', s)
+    line = t[s:e]; ind = line[:len(line) - len(line.lstrip())]; tok = line.split(); tok[0] = f'{thr:g}'
+    with open(rpp_path(folder), 'w', encoding='utf-8', newline='') as f: f.write(t[:s] + ind + ' '.join(tok) + t[e:])
+
+
+def write_freeze(folder, index, signal):
+    e = next(e for e in freezelib.plan(rpp(folder)) if e['index'] == index)
+    os.makedirs(os.path.join(folder, 'freeze'), exist_ok=True)
+    sf.write(os.path.join(folder, e['file']), signal.astype(np.float32), SR, subtype='FLOAT')
+    fz = os.path.join(folder, 'freeze'); data = freezelib.load_json(fz, 'freeze.json'); data.setdefault('tracks', {})
+    data['tracks'][str(index)] = dict(e, time='2026-11-21T10:00')
+    freezelib.save_json(fz, 'freeze.json', data)
+
+
+def copy_project(folder):
+    dst = tempfile.mkdtemp(prefix='copy-', dir=os.path.dirname(folder))
+    shutil.copytree(folder, dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns('freeze', 'calib.json'))
+    return dst
+
+
+def save_calib(folder, tracks, master, key=None):
+    freezelib.save_json(folder, 'calib.json', dict(key=key or freezelib.calib_key(rpp(folder)), time='2026-11-21T10:00',
+                                                   tracks=tracks, master=master))
+
+
+def run(folder, *args):
+    fd, js = tempfile.mkstemp(suffix='.json'); os.close(fd)
+    try:
+        r = subprocess.run([sys.executable, os.path.join(SKILL, 'analyze.py'), folder, '--json', js, *args],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        with open(js, encoding='utf-8') as f: return r.stdout, json.load(f)
+    finally:
+        os.remove(js)
+
+
+@pytest.fixture
+def project(tmp_path, rpp_text):
+    d = tmp_path / 'song'; (d / 'Media').mkdir(parents=True)
+    (d / 'song.rpp').write_bytes(rpp_text.encode('utf-8'))
+    sf.write(d / 'Media' / 'g.wav', pink(-20, seconds=13.5, ch=1).astype(np.float32), SR, subtype='FLOAT')
+    sf.write(d / 'Media' / 'm.wav', pink(-18, seconds=6, ch=2, seed=7).astype(np.float32), SR, subtype='FLOAT')
+    return str(d)

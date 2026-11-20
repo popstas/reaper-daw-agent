@@ -9,10 +9,12 @@
 
 ReaVerb, де-эссер и неизвестные плагины не моделируются - это видно в отчёте.
 """
-import argparse, os, re, sys
+import argparse, json, os, re, sys
 import numpy as np, soundfile as sf, pyloudnorm as pyln
 from scipy.signal import lfilter, butter, sosfilt, welch
 from numba import njit
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import freezelib
 
 SR = 48000
 db = lambda v: 20 * np.log10(np.maximum(v, 1e-12))
@@ -21,34 +23,28 @@ meter = None
 # ---------- разбор .rpp ----------
 
 def parse_rpp(text):
+    """(мастер-FX, треки). Цепочки - freezelib.track_fx: bypass, kind, name, p, text."""
     text = text.replace('\r', '')
-    def fxlist(block):
-        out = []
-        for m in re.finditer(r'BYPASS (\d)[^\n]*\n\s*<(JS|VST3?|VSTi|CLAP) ("[^"]*"|\S+)[^\n]*\n([^\n]*)', block):
-            name = m.group(3).strip('"')
-            params = m.group(4).split() if m.group(2) == 'JS' else []
-            out.append(dict(bypass=m.group(1) == '1', kind=m.group(2), name=name, p=params))
-        return out
-    master = re.search(r'<MASTERFXLIST\n(.*?)\n  >\n', text, re.S)
-    mfx = fxlist(master.group(1)) if master else []
+    mfx = freezelib.master_fx(text)
     tracks = []
-    for tb in re.split(r'\n  <TRACK', text)[1:]:
-        name = re.search(r'\n\s*NAME ("?)(.*?)\1\n', tb).group(2)
+    for tr in freezelib.split_tracks(text):
+        tb = tr['text']
         vol = float(re.search(r'\n\s*VOLPAN ([^ \n]+)', tb).group(1))
         ms = re.search(r'\n\s*MUTESOLO (\d)', tb)
-        fxc = re.search(r'<FXCHAIN\n(.*?)\n    >\n', tb, re.S)
         fxon = re.search(r'\n    FX (\d)', tb)
-        items = []
+        items, nmidi = [], 0
         for ib in tb.split('<ITEM')[1:]:
             g = lambda k, d=None: (re.search(r'\n\s*' + k + r' ([^\n]+)', ib).group(1) if re.search(r'\n\s*' + k + r' ([^\n]+)', ib) else d)
             f = re.search(r'FILE "([^"]+)"', ib)
-            if not f: continue
-            items.append(dict(pos=float(g('POSITION')), len=float(g('LENGTH')), soffs=float(g('SOFFS', '0')),
+            if not f:
+                nmidi += '<SOURCE MIDI' in ib
+                continue
+            items.append(dict(pos=float(g('POSITION')), len=float(g('LENGTH')), soffs=float(g('SOFFS', '0').split()[0]),
                               file=f.group(1).replace('\\', '/'), fi=float(g('FADEIN', '0 0').split()[1]),
                               fo=float(g('FADEOUT', '0 0').split()[1]), vol=float(g('VOLPAN', '1').split()[0]),
                               chan=int(g('CHANMODE', '0')), mute=g('MUTE', '0 0').split()[0] == '1'))
-        tracks.append(dict(name=name, vol=vol, mute=bool(ms and ms.group(1) == '1'),
-                           fx=fxlist(fxc.group(1)) if fxc else [], fxon=not fxon or fxon.group(1) == '1', items=items))
+        tracks.append(dict(index=tr['index'], name=tr['name'], text=tb, vol=vol, mute=bool(ms and ms.group(1) == '1'),
+                           fx=freezelib.track_fx(tb), fxon=not fxon or fxon.group(1) == '1', items=items, nmidi=nmidi))
     return mfx, tracks
 
 def build(track, root):
@@ -69,6 +65,36 @@ def build(track, root):
         if fo: env[-fo:] *= np.linspace(1, 0, fo)
         p = int(it['pos'] * SR); y[p:p + n] += seg * env[:, None] * it['vol']
     return y
+
+def fit(x, length):
+    """Обрезать или добить нулями до length сэмплов."""
+    if length is None or len(x) == length: return x
+    return x[:length] if len(x) > length else np.pad(x, ((0, length - len(x)), (0, 0)))
+
+def track_signal(t, folder, freeze_entry, length):
+    """Сигнал трека, цепочка к прогону и строка о заморозке ('' - трек не замораживается).
+    Актуальная заморозка - wav с позиции 0 и FX после точки; иначе айтемы и вся цепочка."""
+    if freeze_entry is None: return build(t, folder), t['fx'], ''
+    st = freezelib.freeze_status(folder, freeze_entry)
+    if st == 'ok':
+        x, sr = sf.read(os.path.join(folder, freeze_entry['file']), always_2d=True)
+        assert sr == SR, f"{freeze_entry['file']}: {sr} Гц"
+        x = np.repeat(x, 2, 1) if x.shape[1] == 1 else x[:, :2]
+        when = freezelib.freeze_record(folder, freeze_entry).get('time', '')
+        when = f"{when[8:10]}.{when[5:7]} {when[11:16]}" if len(when) >= 16 else when
+        return fit(x.astype(np.float64), length), t['fx'][freeze_entry['point'] + 1:], f"заморожено после {freeze_entry['after']} (freeze {when})"
+    note = 'заморозка устарела - freeze.sh' if st == 'stale' else 'нет заморозки - freeze.sh'
+    return build(t, folder), t['fx'], f"{note} (после {freeze_entry['after']} модель не считает)"
+
+def model_length(tracks, folder, plan):
+    """Сэмплов в модели: максимум из концов айтемов и длин актуальных wav заморозки."""
+    end = max([i['pos'] + i['len'] for t in tracks if not t['mute'] for i in t['items'] if not i['mute']] or [0])
+    n = int(end * SR) + 1
+    for t in tracks:
+        e = plan.get(t['index'])
+        if e and not t['mute'] and freezelib.freeze_status(folder, e) == 'ok':
+            n = max(n, sf.info(os.path.join(folder, e['file'])).frames)
+    return n
 
 # ---------- DSP: порты штатных JSFX ----------
 
@@ -216,38 +242,50 @@ def lufs(x):
 def frames(x, w):
     n = int(w * SR); k = len(x) // n; return db(np.sqrt((x[:k * n].reshape(k, n) ** 2).mean(1)))
 
+def report_raw(t, x):
+    """Сырой сигнал трека (айтемы до цепочки): уровень, где звук, стерео, стыки айтемов."""
+    n0 = frames(x[:, 0], 0.05); act = np.where(n0 > np.percentile(n0, 95) - 30)[0]
+    print(f"сырой: {lufs(x):.1f} LUFS, пик {db(abs(x).max()):+.1f} dBFS, выше 0 dBFS: {int((abs(x[:, 0]) > 1).sum())} сэмплов (во float это не клип)")
+    if len(act): print(f"звук с {mmss(act[0] * 0.05)} по {mmss(act[-1] * 0.05)} из {mmss(len(x) / SR)}; самые тихие 5% (окна 50 мс) {np.percentile(n0, 5):.1f} dB")
+    if not np.allclose(x[:, 0], x[:, 1]):
+        print(f"стерео: L {db(np.sqrt(np.mean(x[:, 0] ** 2))):.1f} / R {db(np.sqrt(np.mean(x[:, 1] ** 2))):.1f} dB")
+    for it_prev, it in zip(t['items'], t['items'][1:]):
+        p = int(it['pos'] * SR); w = int(0.005 * SR)
+        if p < 6 * w or p + 6 * w > len(x): continue
+        lv = [db(np.sqrt(np.mean(x[p + o * w:p + (o + 1) * w, 0] ** 2))) for o in range(-4, 4)]
+        gap = it['pos'] - (it_prev['pos'] + it_prev['len'])
+        b2 = db(np.sqrt(np.mean(x[p - 2 * SR:p, 0] ** 2))); a2 = db(np.sqrt(np.mean(x[p:p + 2 * SR, 0] ** 2)))
+        dip = ("рядом пауза, провал не важен" if min(lv[0], lv[-1]) < -35 else f"провал {min(lv) - max(lv[0], lv[-1]):+.0f} dB (5 мс окна)")
+        print(f"стык {mmss(it['pos'])}: перекрытие {max(-gap, 0.0) * 1000 + 0.0:.0f} мс, фейды {it_prev['fo'] * 1000:.0f}/{it['fi'] * 1000:.0f} мс; "
+              f"{dip}; уровень 2 с до/после {b2:.1f}/{a2:.1f}")
+
 def main():
     global meter
     ap = argparse.ArgumentParser(); ap.add_argument('dir'); ap.add_argument('--rpp'); ap.add_argument('--wav')
+    ap.add_argument('--json', help='записать уровни треков и мастера в JSON')
     a = ap.parse_args(); meter = pyln.Meter(SR)
-    rpp = a.rpp or max((f for f in os.listdir(a.dir) if f.lower().endswith('.rpp')), key=lambda f: os.path.getmtime(os.path.join(a.dir, f)))
-    mfx, tracks = parse_rpp(open(os.path.join(a.dir, rpp), encoding='utf-8', errors='replace').read())
+    path = freezelib.find_rpp(a.dir, a.rpp); rpp = os.path.basename(path)
+    text = freezelib.read_rpp(path)
+    mfx, tracks = parse_rpp(text)
+    plan = {e['index']: e for e in freezelib.plan(text)}
+    length = model_length(tracks, a.dir, plan)
     print(f"# {rpp}")
     outs, raw = {}, {}
     for t in tracks:
         if t['mute']: print(f"## {t['name']}: заглушен, пропущен"); continue
-        x = build(t, a.dir)
-        if x is None: continue
-        raw[t['name']] = x
-        print(f"\n## {t['name']}  (фейдер {db(t['vol']):+.1f} dB, айтемов {len(t['items'])})")
-        n0 = frames(x[:, 0], 0.05); act = np.where(n0 > np.percentile(n0, 95) - 30)[0]
-        print(f"сырой: {lufs(x):.1f} LUFS, пик {db(abs(x).max()):+.1f} dBFS, выше 0 dBFS: {int((abs(x[:, 0]) > 1).sum())} сэмплов (во float это не клип)")
-        if len(act): print(f"звук с {mmss(act[0] * 0.05)} по {mmss(act[-1] * 0.05)} из {mmss(len(x) / SR)}; самые тихие 5% (окна 50 мс) {np.percentile(n0, 5):.1f} dB")
-        if not np.allclose(x[:, 0], x[:, 1]):
-            print(f"стерео: L {db(np.sqrt(np.mean(x[:, 0] ** 2))):.1f} / R {db(np.sqrt(np.mean(x[:, 1] ** 2))):.1f} dB")
-        for it_prev, it in zip(t['items'], t['items'][1:]):
-            p = int(it['pos'] * SR); w = int(0.005 * SR)
-            if p < 6 * w or p + 6 * w > len(x): continue
-            lv = [db(np.sqrt(np.mean(x[p + o * w:p + (o + 1) * w, 0] ** 2))) for o in range(-4, 4)]
-            gap = it['pos'] - (it_prev['pos'] + it_prev['len'])
-            b2 = db(np.sqrt(np.mean(x[p - 2 * SR:p, 0] ** 2))); a2 = db(np.sqrt(np.mean(x[p:p + 2 * SR, 0] ** 2)))
-            dip = ("рядом пауза, провал не важен" if min(lv[0], lv[-1]) < -35 else f"провал {min(lv) - max(lv[0], lv[-1]):+.0f} dB (5 мс окна)")
-            print(f"стык {mmss(it['pos'])}: перекрытие {max(-gap, 0.0) * 1000 + 0.0:.0f} мс, фейды {it_prev['fo'] * 1000:.0f}/{it['fi'] * 1000:.0f} мс; "
-                  f"{dip}; уровень 2 с до/после {b2:.1f}/{a2:.1f}")
+        sig, chain, note = track_signal(t, a.dir, plan.get(t['index']), length)
+        if sig is None and not note: continue
+        print(f"\n## {t['name']}  (фейдер {db(t['vol']):+.1f} dB, айтемов {len(t['items'])}" + (f", MIDI {t['nmidi']}" if t['nmidi'] else '') + ")")
+        if note: print(note)
+        if sig is None: continue
+        x = build(t, a.dir) if note.startswith('заморожено') else sig   # сырой сигнал: айтемы до цепочки
+        if x is not None:
+            raw[t['name']] = x
+            report_raw(t, x)
         if t['fxon']:
-            y, st, sk = run_chain(x, t['fx'], t['name'])
+            y, st, sk = run_chain(sig, chain, t['name'])
         else:
-            y, st, sk = x, {}, ['FX выключены']
+            y, st, sk = sig, {}, ['FX выключены']
         y = y * t['vol']; outs[t['name']] = y
         print(f"после цепочки и фейдера: {lufs(y):.1f} LUFS" + (f"; не моделируется: {', '.join(sk)}" if sk else ''))
         if 'gate' in st:
@@ -296,6 +334,10 @@ def main():
         e1, e2 = be(vo), be(others)
         print("полосы, голос минус остальное (dB): " + " ".join(f"{lo}-{hi}:{x2 - x1:+.0f}" for (lo, hi), x1, x2 in zip(bands, e2, e1)))
     if a.wav: sf.write(a.wav, out.astype(np.float32), SR, subtype='FLOAT'); print(f"модель микса: {a.wav}")
+    if a.json:
+        with open(a.json, 'w', encoding='utf-8') as f:
+            json.dump(dict(tracks={n: dict(lufs=round(lufs(v), 3)) for n, v in outs.items()}, master_in=round(lufs(mix), 3),
+                           master_out=round(lufs(out), 3), pred=None), f, ensure_ascii=False)
 
 if __name__ == '__main__':
     main()
