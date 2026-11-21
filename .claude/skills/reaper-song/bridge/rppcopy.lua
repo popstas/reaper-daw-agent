@@ -1,4 +1,5 @@
 -- Копия .rpp текущей вкладки под латинским именем A.dir .. "project.rpp": freeze.sh сверяет её с локальной копией.
+temp_save_drumkit_dirty()
 local _, path = reaper.EnumProjects(-1)
 if path == "" then error("вкладка без файла проекта") end
 reaper.RecursiveCreateDirectory(A.dir, 0)

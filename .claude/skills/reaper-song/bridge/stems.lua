@@ -2,9 +2,13 @@
 --   A.mode = 'freeze'  - выход трека в точке заморозки: A.tracks = {{index=0, point=3}, ...} (с 0),
 --                        FX после точки выключены, фейдер 0 dB, пан по центру, FX мастера выключены,
 --                        WAV 32 bit float 48 кГц, весь проект, файлы $tracknumber в A.dir
--- Печатает STEM<TAB>index<TAB>путь на nb на каждый стем. Всё временное возвращается и при ошибке.
+--   A.mode = 'before'  - рендер «до» за один проход: мастер + стемы всех незаглушённых треков в формате проекта,
+--                        файлы $tracknumber в A.dir; мастер переносится в <папка RENDER_FILE проекта>\<A.name>.<ext> и остаётся
+-- Печатает STEM<TAB>index<TAB>путь на nb<TAB>имя трека на каждый стем, для before ещё MASTER<TAB>путь.
+-- Всё временное возвращается и при ошибке.
 -- WAV 32 bit float в RENDER_FORMAT: "evaw" + 0x20 (32 бит) + 0x00 0x01 - проверено rawcheck.py: FLOAT.
 local WAV32F = "ZXZhdyAAAQ=="
+temp_save_drumkit_dirty()
 if reaper.IsProjectDirty(0) == 1 then error("проект не сохранён (dirty): сохранить или спросить пользователя, потом повторить") end
 local dirty0 = reaper.IsProjectDirty(0)
 
@@ -45,6 +49,16 @@ local ok, err = pcall(function()
     reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", 3, true)
     reaper.GetSetProjectInfo_String(0, "RENDER_FORMAT", WAV32F, true)
     reaper.GetSetProjectInfo_String(0, "RENDER_PATTERN", "$tracknumber", true)
+  elseif A.mode == "before" then
+    A.tracks = {}
+    for i = 0, reaper.CountTracks(0) - 1 do
+      local tr = reaper.GetTrack(0, i)
+      if reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") == 0 then reaper.SetTrackSelected(tr, true); A.tracks[#A.tracks + 1] = {index = i} end
+    end
+    local _, rf = reaper.GetSetProjectInfo_String(0, "RENDER_FILE", "", false)
+    A.dest_dir = (rf ~= "" and rf or "C:\\rec\\2026"):gsub("\\$", "") .. "\\"
+    reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", 1, true)   -- мастер + стемы выделенных треков
+    reaper.GetSetProjectInfo_String(0, "RENDER_PATTERN", "$tracknumber", true)
   else
     error("неизвестный режим " .. tostring(A.mode))
   end
@@ -62,7 +76,17 @@ local ok, err = pcall(function()
   local n = 0
   for _, f in ipairs(files(A.dir)) do
     local num = tonumber(f:match("^(%d+)"))
-    if num and f:lower():match("%.wav$") then out("STEM", num - 1, A.dir .. f); n = n + 1 end
+    local ext = f:match("%.%w+$")
+    if num == 0 and A.mode == "before" then
+      local dest = A.dest_dir .. A.name .. ext
+      os.remove(dest) -- os.rename в Windows не пишет поверх существующего
+      local r, e = os.rename(A.dir .. f, dest)
+      if not r then error("мастер не перенесён: " .. tostring(e)) end
+      out("MASTER", dest)
+    elseif num and num > 0 then
+      local _, tn = reaper.GetTrackName(reaper.GetTrack(0, num - 1))
+      out("STEM", num - 1, A.dir .. f, tn); n = n + 1
+    end
   end
   if n ~= #A.tracks then error("стемов " .. n .. " вместо " .. #A.tracks .. " в " .. A.dir) end
 end)

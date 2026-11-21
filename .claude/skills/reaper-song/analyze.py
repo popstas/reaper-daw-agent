@@ -343,6 +343,7 @@ def main():
     ap.add_argument('--json', help='записать уровни треков и мастера в JSON')
     ap.add_argument('--target', type=float, help='подобрать порог MGA_JSLimiterST мастера под прогноз рендера, LUFS')
     ap.add_argument('--no-calib', action='store_true', help='не применять calib.json')
+    ap.add_argument('--stems-dir', help='записать модельные выходы треков (после цепочки, фейдера и поправки) в DIR/<трек>.wav')
     a = ap.parse_args(); meter = pyln.Meter(SR)
     path = freezelib.find_rpp(a.dir, a.rpp); rpp = os.path.basename(path)
     text = freezelib.read_rpp(path)
@@ -422,6 +423,9 @@ def main():
         e1, e2 = be(vo), be(others)
         print("полосы, голос минус остальное (dB): " + " ".join(f"{lo}-{hi}:{x2 - x1:+.0f}" for (lo, hi), x1, x2 in zip(bands, e2, e1)))
     if a.wav: sf.write(a.wav, out.astype(np.float32), SR, subtype='FLOAT'); print(f"модель микса: {a.wav}")
+    if a.stems_dir:
+        os.makedirs(a.stems_dir, exist_ok=True)
+        for n, v in outs.items(): sf.write(os.path.join(a.stems_dir, f"{n}.wav"), v.astype(np.float32), SR, subtype='FLOAT')
     if a.json:
         with open(a.json, 'w', encoding='utf-8') as f:
             json.dump(dict(tracks={n: dict(lufs=round(lufs(v), 3)) for n, v in outs.items()}, master_in=round(lufs(mix), 3),

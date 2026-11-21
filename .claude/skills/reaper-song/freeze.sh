@@ -47,7 +47,7 @@ lua=$(mktemp); chk=$(mktemp); got=$(mktemp); trap 'rm -f "$lua" "$chk" "$got"' E
 if $luaonly; then cat "$lua"; exit 0; fi
 
 # проект на nb = локальная копия, иначе отпечатки посчитаны не по тому, что рендерится
-{ head_lua; cat "$DIR/bridge/rppcopy.lua"; } > "$chk"
+{ head_lua; cat "$DIR/bridge/temp.lua" "$DIR/bridge/rppcopy.lua"; } > "$chk"
 res=$(bash "$DIR/bridge/bridge.sh" "$chk") || { echo "$res"; exit 1; }
 RPPNB=$(echo "$res" | grep '^RPP' | cut -f2)
 scp -q "$HOST:${RPPNB//\\//}" "$got"
@@ -64,7 +64,7 @@ res=$(bash "$DIR/bridge/bridge.sh" -t 900 "$lua") || { echo "$res"; exit 1; }
 echo "$res" | grep -v '^STEM\|^OK' || true
 mkdir -p "$LOCAL/freeze"
 idxs=() rm=()
-while IFS=$'\t' read -r _ idx path; do
+while IFS=$'\t' read -r _ idx path _name; do
   scp -q "$HOST:${path//\\//}" "$LOCAL/freeze/$(printf '%02d' $((idx + 1))).wav"
   idxs+=("$idx"); rm+=("$path")
 done < <(echo "$res" | grep '^STEM')

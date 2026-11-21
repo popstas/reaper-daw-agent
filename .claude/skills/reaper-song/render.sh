@@ -15,6 +15,11 @@
 #   --proj ЧАСТЬ_ИМЕНИ          сначала переключиться на вкладку, путь которой содержит строку (иначе - текущая вкладка)
 #   --final                     итоговый рендер в цель проекта ($project.mp3) без переименования, файл остаётся;
 #                               прежний файл с этим именем заменяется. Имя рендера не нужно
+#   --stems                     рендер «до» за один проход: мастер + стемы всех незаглушённых треков (формат проекта).
+#                               Мастер остаётся на nb как <имя>.<ext> рядом с целью рендера, скачивается в <папка>/<имя>.<ext>;
+#                               стемы скачиваются в <папка>/<имя>_<трек>.<ext>, меряются и удаляются с nb. Правки (--set и т.п.) не ставятся
+#   --calib ПАПКА_ПРОЕКТА       с --stems: посчитать поправку модели (calib.py) в ПАПКА_ПРОЕКТА/calib.json.
+#                               Песню с VST сначала заморозить (freeze.sh), иначе поправка гитары будет на Blue Cat
 # ТРЕК: guitar | mic | master. Имя - латиница/цифры/_-. (файл <имя>.<формат проекта>).
 # Рендер по настройкам проекта (42230); файл с именем цели рендера, если есть, не трогается.
 # Если проект был сохранён (dirty 0), после возврата правок сохраняется снова; несохранённые правки пользователя не сохраняются.
@@ -22,7 +27,7 @@
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 . "$DIR/env.sh"
-solo=() mute=() bypass=() addfx=() set=() vol=() itemvol=(); proj=''; nomaster=false; keep=false; final=false
+solo=() mute=() bypass=() addfx=() set=() vol=() itemvol=(); proj=''; nomaster=false; keep=false; final=false; stems=false; calib=''
 while [ $# -gt 0 ]; do
   case $1 in
     --solo) solo+=("$2"); shift 2;;
@@ -36,6 +41,8 @@ while [ $# -gt 0 ]; do
     --nomaster) nomaster=true; shift;;
     --keep) keep=true; shift;;
     --final) final=true; keep=true; shift;;
+    --stems) stems=true; shift;;
+    --calib) calib=$2; shift 2;;
     -*) echo "неизвестная опция $1" >&2; exit 1;;
     *) break;;
   esac
@@ -46,6 +53,31 @@ mkdir -p "$LOCAL"
 
 q() { printf '[==[%s]==]' "$1"; }
 lua=$(mktemp); trap 'rm -f "$lua"' EXIT
+
+if $stems; then
+  [ -z "$calib" ] || [ -d "$calib" ] || { echo "нет папки проекта $calib" >&2; exit 1; }
+  NB="C:\\rec\\2026\\reaper-song\\$NAME\\"
+  {
+    echo "local A = {mode = 'before', name = $(q "$NAME"), dir = $(q "$NB"), proj = $(q "$proj")}"
+    [ -n "$proj" ] && cat "$DIR/bridge/select.lua"
+    cat "$DIR/bridge/temp.lua" "$DIR/bridge/stems.lua"
+  } > "$lua"
+  res=$(bash "$DIR/bridge/bridge.sh" -t 900 "$lua") || { echo "$res"; exit 1; }
+  echo "$res" | grep -v '^STEM\|^MASTER\|^OK' || true
+  M=$(echo "$res" | grep '^MASTER' | cut -f2)
+  ML="$LOCAL/${M##*\\}"; scp -q "$HOST:${M//\\//}" "$ML"
+  files=("$ML") cargs=() rm=()
+  while IFS=$'\t' read -r _ idx path tname; do
+    f="$LOCAL/${NAME}_${tname// /_}.${path##*.}"
+    scp -q "$HOST:${path//\\//}" "$f"
+    files+=("$f"); cargs+=(--stem "$tname=$f"); rm+=("$path")
+  done < <(echo "$res" | grep '^STEM')
+  { for p in "${rm[@]}"; do printf 'os.remove(%s)\n' "$(q "$p")"; done; echo 'out("removed")'; } | bash "$DIR/bridge/bridge.sh" >/dev/null
+  echo "мастер на nb: $M"
+  uv run -q "$DIR/measure.py" "${files[@]}"
+  [ -n "$calib" ] && uv run -q "$DIR/calib.py" "$calib" --master "$ML" "${cargs[@]}"
+  exit 0
+fi
 {
   echo "local A = {name = $(q "$NAME"), nomaster = $nomaster, final = $final, solo = {}, mute = {}, bypass = {}, addfx = {}, set = {}, vol = {}, itemvol = {}}"
   for s in "${solo[@]+"${solo[@]}"}"; do echo "table.insert(A.solo, $(q "$s"))"; done

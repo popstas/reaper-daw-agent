@@ -95,3 +95,12 @@ function temp_finish(dirty0)
   if dirty0 == 0 and reaper.IsProjectDirty(0) == 1 then reaper.Main_SaveProject(0, false); out("правки возвращены, проект пересохранён") end
   out("dirty", reaper.IsProjectDirty(0))
 end
+
+-- MT-PowerDrumKit сам помечает проект изменённым (undo «Edit FX parameter: … MT-PowerDrumKit»), в файле при этом меняется
+-- только время сохранения. Такой dirty - не правка пользователя: сохранить перед рендером (решение пользователя 21.11).
+function temp_save_drumkit_dirty()
+  if reaper.IsProjectDirty(0) == 1 and (reaper.Undo_CanUndo2(0) or ""):find("MT%-PowerDrumKit") then
+    reaper.Main_SaveProject(0, false)
+    out("сохранён: последний шаг undo - параметр MT-PowerDrumKit, плагин меняет его сам")
+  end
+end
