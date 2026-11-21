@@ -5,6 +5,7 @@
 совпал - wav заморозки годится, фейдер и всё после точки модель считает сама.
 
     python3 freezelib.py plan <папка> [--rpp F]          JSON-план: какие треки, точка, отпечаток, cached
+    python3 freezelib.py todo <папка> [--rpp F]          то же строками: index, point, cached 0/1, name, after, key
     python3 freezelib.py save <папка> [--rpp F] INDEX...  записать треки в freeze/freeze.json (wav уже скачаны)
 """
 import argparse, datetime, glob, hashlib, json, os, re, sys
@@ -181,6 +182,54 @@ def calib_key(rpp_text):
     return _sha(parts)
 
 
+def wav_seconds(path):
+    """Длительность wav (PCM и float) по заголовку, без сторонних библиотек."""
+    import struct
+    with open(path, 'rb') as f:
+        if f.read(12)[8:12] != b'WAVE': raise ValueError(f'{path}: не WAV')
+        rate = block = None
+        while True:
+            h = f.read(8)
+            if len(h) < 8: raise ValueError(f'{path}: нет data')
+            cid, size = h[:4], struct.unpack('<I', h[4:])[0]
+            if cid == b'fmt ':
+                fmt = f.read(size); rate = struct.unpack('<I', fmt[4:8])[0]; block = struct.unpack('<H', fmt[12:14])[0]
+            elif cid == b'data':
+                return size / block / rate
+            else:
+                f.seek(size + (size & 1), 1)
+
+
+def wav_peak(path):
+    """Пик wav 32 bit float (формат заморозки), по модулю; None для других форматов."""
+    import array, struct
+    with open(path, 'rb') as f:
+        f.read(12); fmt = None
+        while True:
+            h = f.read(8)
+            if len(h) < 8: return None
+            cid, size = h[:4], struct.unpack('<I', h[4:])[0]
+            if cid == b'fmt ':
+                fmt = f.read(size)
+                if size & 1: f.read(1)
+            elif cid == b'data':
+                tag, bits = struct.unpack('<H', fmt[:2])[0], struct.unpack('<H', fmt[14:16])[0]
+                if tag not in (3, 0xFFFE) or bits != 32: return None
+                peak = 0.0
+                while size > 0:
+                    a = array.array('f'); chunk = f.read(min(size, 1 << 22)); a.frombytes(chunk[:len(chunk) // 4 * 4])
+                    if a: peak = max(peak, max(a), -min(a))
+                    size -= len(chunk)
+                    if not chunk: break
+                return peak
+            else:
+                f.seek(size + (size & 1), 1)
+
+
+def mmss(sec):
+    return f"{int(sec // 60)}:{int(round(sec % 60)):02d}"
+
+
 def find_rpp(folder, rpp=None):
     if rpp: return rpp if os.path.isabs(rpp) else os.path.join(folder, rpp)
     cands = [f for f in glob.glob(os.path.join(folder, '*.rpp')) + glob.glob(os.path.join(folder, '*.RPP'))
@@ -194,21 +243,32 @@ def read_rpp(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('cmd', choices=['plan', 'save']); ap.add_argument('dir'); ap.add_argument('--rpp')
+    ap.add_argument('cmd', choices=['plan', 'todo', 'save']); ap.add_argument('dir'); ap.add_argument('--rpp')
     ap.add_argument('index', nargs='*', type=int)
     a = ap.parse_args()
     text = read_rpp(find_rpp(a.dir, a.rpp)); p = plan(text)
     if a.cmd == 'plan':
         print(json.dumps([dict(e, cached=freeze_status(a.dir, e) == 'ok') for e in p], ensure_ascii=False))
         return
+    if a.cmd == 'todo':   # для freeze.sh: index<TAB>point<TAB>cached 0/1<TAB>name<TAB>after<TAB>key
+        for e in p: print('\t'.join(map(str, [e['index'], e['point'], int(freeze_status(a.dir, e) == 'ok'), e['name'], e['after'], e['key']])))
+        return
     fz = os.path.join(a.dir, 'freeze'); data = load_json(fz, 'freeze.json'); data.setdefault('tracks', {})
-    now = datetime.datetime.now().isoformat(timespec='minutes')
+    now = datetime.datetime.now().isoformat(timespec='minutes'); silent = []
     for i in a.index:
         e = next((e for e in p if e['index'] == i), None)
         if e is None: sys.exit(f'трек {i} не в плане заморозки')
-        if not os.path.exists(os.path.join(a.dir, e['file'])): sys.exit(f"нет {e['file']}")
+        path = os.path.join(a.dir, e['file'])
+        if not os.path.exists(path): sys.exit(f"нет {e['file']}")
+        pk = wav_peak(path)
+        if pk is not None and pk < 1e-5:   # ниже -100 dBFS: VSTi не звучит (MT-PowerDrumKit не активирован в этом запуске REAPER)
+            os.remove(path); silent.append(e['name']); continue
         data['tracks'][str(i)] = dict(e, time=now)
+        print(f"заморожено: {e['name']} после {e['after']}, {mmss(wav_seconds(os.path.join(a.dir, e['file'])))}")
     save_json(fz, 'freeze.json', data)
+    if silent:
+        sys.exit(f"стем - тишина, не заморожен: {', '.join(silent)}. VSTi не звучит: активировать плагин "
+                 f"(MT-PowerDrumKit - открыть его окно после открытия проекта) и повторить freeze.sh")
 
 
 if __name__ == '__main__':

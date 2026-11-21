@@ -93,3 +93,45 @@ def test_find_rpp_skips_variant_copies(tmp_path):
     (tmp_path / 'song.rpp').write_text('x'); time.sleep(0.01)
     (tmp_path / 'zz-variant-1.rpp').write_text('x')
     assert os.path.basename(find_rpp(str(tmp_path))) == 'song.rpp'
+
+
+def test_wav_seconds_float(tmp_path):
+    import numpy as np, soundfile as sf
+    from freezelib import wav_seconds
+    sf.write(tmp_path / 'a.wav', np.zeros((48000 * 3, 2), np.float32), 48000, subtype='FLOAT')
+    assert abs(wav_seconds(str(tmp_path / 'a.wav')) - 3.0) < 1e-6
+
+
+def test_cli_todo_and_save(project):
+    import subprocess, sys, os
+    from conftest import SKILL, pink, write_freeze
+    cli = [sys.executable, os.path.join(SKILL, 'freezelib.py')]
+    r = subprocess.run(cli + ['todo', project], capture_output=True, text=True)
+    assert [l.split('\t')[:3] for l in r.stdout.splitlines()] == [['0', '3', '0'], ['1', '0', '0']]
+    from freezelib import plan
+    from conftest import rpp
+    assert [l.split('\t')[5] for l in r.stdout.splitlines()] == [e['key'] for e in plan(rpp(project))]
+    write_freeze(project, 0, pink(-14))
+    r = subprocess.run(cli + ['todo', project], capture_output=True, text=True)
+    assert [l.split('\t')[:3] for l in r.stdout.splitlines()] == [['0', '3', '1'], ['1', '0', '0']]
+    import soundfile as sf, numpy as np
+    sf.write(os.path.join(project, 'freeze', '02.wav'), np.full((48000 * 61, 2), 0.1, np.float32), 48000, subtype='FLOAT')
+    r = subprocess.run(cli + ['save', project, '1'], capture_output=True, text=True)
+    assert r.returncode == 0 and 'заморожено: drums после MT-PowerDrumKit' in r.stdout and '1:01' in r.stdout
+    r = subprocess.run(cli + ['todo', project], capture_output=True, text=True)
+    assert [l.split('\t')[2] for l in r.stdout.splitlines()] == ['1', '1']
+
+
+def test_save_refuses_silent_stem(project):
+    import subprocess, sys, os, json
+    import numpy as np, soundfile as sf
+    from conftest import SKILL
+    os.makedirs(os.path.join(project, 'freeze'), exist_ok=True)
+    sf.write(os.path.join(project, 'freeze', '02.wav'), np.zeros((48000, 2), np.float32), 48000, subtype='FLOAT')
+    x = np.zeros((48000, 2), np.float32); x[100, 0] = 0.5
+    sf.write(os.path.join(project, 'freeze', '01.wav'), x, 48000, subtype='FLOAT')
+    r = subprocess.run([sys.executable, os.path.join(SKILL, 'freezelib.py'), 'save', project, '0', '1'], capture_output=True, text=True)
+    assert r.returncode != 0 and 'тишина' in r.stdout + r.stderr and 'drums' in r.stdout + r.stderr
+    tracks = json.load(open(os.path.join(project, 'freeze', 'freeze.json')))['tracks']
+    assert list(tracks) == ['0']                              # guitar сохранена, тихий drums - нет
+    assert not os.path.exists(os.path.join(project, 'freeze', '02.wav'))
