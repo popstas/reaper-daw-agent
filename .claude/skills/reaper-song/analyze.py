@@ -277,7 +277,7 @@ def load_calib(folder, rpp_text):
     c = freezelib.load_json(folder, 'calib.json')
     fix = f'мастер {DEFAULT_MASTER:+.1f} по умолчанию'
     if not c: return {}, f'поправки нет - render.sh --stems --calib (рендер «до» со стемами); {fix}'
-    if c.get('key') != freezelib.calib_key(rpp_text):
+    if c.get('key') != freezelib.calib_key(rpp_text, folder):
         return {}, f'поправка устарела - рендер «до» со стемами (render.sh --stems --calib); {fix}'
     tm = c.get('time', ''); tm = f"{tm[8:10]}.{tm[5:7]} {tm[11:16]}" if len(tm) >= 16 else tm
     parts = [f"{n} {v:+.1f}" for n, v in (c.get('tracks') or {}).items()]
@@ -286,7 +286,7 @@ def load_calib(folder, rpp_text):
 
 def solve_threshold(mix, mfx, target, offset):
     """Порог первого активного MGA_JSLimiterST мастера, при котором прогноз рендера (модель + offset) = target ± 0.1.
-    Ниже порог - громче. Бисекция в [-30, 0]."""
+    Ниже порог - громче. Без вилки - сначала нужный предел (-30 или 0), внутри вилки - секущая, иначе бисекция."""
     idx = next((i for i, f in enumerate(mfx) if not f['bypass'] and f['name'] == 'loser/MGA_JSLimiterST'), None)
     if idx is None: return dict(ok=False, thr=None, model=None, pred=None, note='нет MGA_JSLimiterST на мастере')
     def ev(thr):
@@ -300,7 +300,7 @@ def solve_threshold(mix, mfx, target, offset):
         if t not in pts: pts[t] = ev(t)
         return t, pts[t][0], pts[t][1]
     t, m, pr = at(num(mfx[idx]['p'], 0, -8))
-    for _ in range(12):
+    for _ in range(13):
         if abs(pr - target) <= 0.05: break
         if t == -30 and pr < target: return dict(ok=False, thr=t, model=m, pred=pr, note=f'цель недостижима: при пороге -30 прогноз {pr:.1f}')
         if t == 0 and pr > target: return dict(ok=False, thr=t, model=m, pred=pr, note=f'цель недостижима: при пороге 0 прогноз {pr:.1f}')
@@ -309,6 +309,10 @@ def solve_threshold(mix, mfx, target, offset):
             a_, b_ = max(loud), min(quiet); pa, pb = pts[a_][1], pts[b_][1]
             nt = a_ + (b_ - a_) * (pa - target) / (pa - pb)
             if not a_ < nt < b_ or abs(nt - t) < 1e-3: nt = (a_ + b_) / 2
+        elif not loud and -30.0 not in pts:   # все прогнозы тише цели: сначала проверить предел -30 (у плато шаги мельчают)
+            nt = -30.0
+        elif not quiet and 0.0 not in pts:    # все прогнозы громче цели: предел 0
+            nt = 0.0
         else:
             nt = t + (pr - target)
         t, m, pr = at(nt)
@@ -317,8 +321,9 @@ def solve_threshold(mix, mfx, target, offset):
     if abs(pr - target) > 0.1:
         t1, m, pr = min((at(round(t, 1) + d) for d in (-0.1, 0.1)), key=lambda r: abs(r[2] - target))
     thr = round(t1, 1)
-    return dict(ok=abs(pr - target) <= 0.1, thr=thr, model=m, pred=pr,
-                note=f"порог лимитера под {target:.1f} LUFS: {thr:.1f} (модель {m:.1f}, поправка {offset:+.1f}, прогноз {pr:.1f})")
+    ok = abs(pr - target) <= 0.1
+    head = f"порог лимитера под {target:.1f} LUFS" if ok else f"порог лимитера не сошёлся под {target:.1f} LUFS, ближайший"
+    return dict(ok=ok, thr=thr, model=m, pred=pr, note=f"{head}: {thr:.1f} (модель {m:.1f}, поправка {offset:+.1f}, прогноз {pr:.1f})")
 
 def report_raw(t, x):
     """Сырой сигнал трека (айтемы до цепочки): уровень, где звук, стерео, стыки айтемов."""

@@ -135,3 +135,22 @@ def test_save_refuses_silent_stem(project):
     tracks = json.load(open(os.path.join(project, 'freeze', 'freeze.json')))['tracks']
     assert list(tracks) == ['0']                              # guitar сохранена, тихий drums - нет
     assert not os.path.exists(os.path.join(project, 'freeze', '02.wav'))
+
+
+def test_same_project(tmp_path, rpp_text):
+    import subprocess, sys, os
+    from conftest import SKILL
+    a, b = tmp_path / 'a.rpp', tmp_path / 'b.rpp'
+    a.write_text(rpp_text); cli = [sys.executable, os.path.join(SKILL, 'freezelib.py'), 'same', str(a), str(b)]
+    b.write_text(rpp_text.replace('1763700000', '1763799999').replace('SEL 0', 'SEL 1')   # время сохранения, выделение
+                 .replace('WNDRECT 200 200 833 318', 'WNDRECT 10 874 716 262'))                    # размер окна FX
+    assert subprocess.run(cli, capture_output=True, text=True).returncode == 0
+    b.write_text(rpp_text.replace('VOLPAN 1 0 -1 -1 1', 'VOLPAN 0.5 0 -1 -1 1'))          # фейдер mic
+    r = subprocess.run(cli, capture_output=True, text=True)
+    assert r.returncode == 1 and 'VOLPAN' in r.stdout
+
+
+def test_key_ignores_midi_editor_view(rpp_text):
+    t = split_tracks(rpp_text)[1]; fx = track_fx(t['text']); k = track_key(t['text'], fx, 0)
+    txt = t['text'].replace('      <SOURCE MIDI\n', '      <SOURCE MIDI\n        CFGEDITVIEW 0 0.1 64 12 0 -1 -1 0\n        CFGEDIT 1 1 0 1 0 0 1 1 1 1 1 0.125 10 10 1000 800\n')
+    assert txt != t['text'] and track_key(txt, track_fx(txt), 0) == k

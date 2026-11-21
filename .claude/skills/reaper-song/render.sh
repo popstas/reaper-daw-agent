@@ -56,6 +56,8 @@ lua=$(mktemp); trap 'rm -f "$lua"' EXIT
 
 if $stems; then
   [ -z "$calib" ] || [ -d "$calib" ] || { echo "нет папки проекта $calib" >&2; exit 1; }
+  # поправка снимается с локальной копии: проект на nb должен быть тем же, иначе она вберёт чужие фейдеры и JSFX
+  [ -z "$calib" ] || bash "$DIR/nbcheck.sh" "$calib" ${proj:+--proj "$proj"}
   NB="C:\\rec\\2026\\reaper-song\\$NAME\\"
   {
     echo "local A = {mode = 'before', name = $(q "$NAME"), dir = $(q "$NB"), proj = $(q "$proj")}"

@@ -295,7 +295,7 @@ def copy_project(folder):
 
 
 def save_calib(folder, tracks, master, key=None):
-    freezelib.save_json(folder, 'calib.json', dict(key=key or freezelib.calib_key(rpp(folder)), time='2026-11-21T10:00',
+    freezelib.save_json(folder, 'calib.json', dict(key=key or freezelib.calib_key(rpp(folder), folder), time='2026-11-21T10:00',
                                                    tracks=tracks, master=master))
 
 

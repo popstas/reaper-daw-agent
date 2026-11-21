@@ -1,5 +1,5 @@
 import re
-from conftest import run, save_calib, edit_rpp_master_threshold, edit_rpp
+from conftest import run, save_calib, edit_rpp_master_threshold, edit_rpp, write_freeze, pink
 
 
 def test_track_offsets_applied(project):
@@ -56,3 +56,17 @@ def test_target_no_limiter(project):
     edit_rpp(project, '<JS loser/MGA_JSLimiterST', '<JS loser/other_limiter')
     out, _ = run(project, '--target', '-14')
     assert 'нет MGA_JSLimiterST на мастере' in out
+
+
+def test_calib_stale_after_freeze(project):
+    save_calib(project, tracks={'guitar': 7.0}, master=0.4)      # снята, пока гитара не заморожена
+    write_freeze(project, 0, pink(-14))
+    out, js = run(project)
+    assert 'поправка устарела' in out and 'guitar +7.0' not in out
+
+
+def test_target_near_plateau_unreachable(project):
+    out, _ = run(project, '--target', '0')
+    x = float(re.search(r'при пороге -30 прогноз (-?[\d.]+)', out)[1])
+    out, _ = run(project, '--target', f'{x + 0.3:.1f}')
+    assert 'цель недостижима: при пороге -30' in out, out

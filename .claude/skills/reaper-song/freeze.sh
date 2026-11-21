@@ -5,7 +5,7 @@
 #   --proj      вкладка REAPER по части пути (иначе - текущая)
 #   --force     рендерить и треки с актуальной заморозкой
 #   --lua-only  напечатать собранный lua рендера и выйти, ничего не запуская
-# Отказывает, если проект на nb не сохранён или его треки с VST расходятся с локальной копией (тогда fetch.sh).
+# Отказывает, если проект на nb не сохранён или расходится с локальной копией (nbcheck.sh; тогда fetch.sh).
 # Треки с актуальной заморозкой (отпечаток совпал) пропускаются. Всё временное в проекте возвращается.
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -42,23 +42,13 @@ head_lua() {
   [ -n "$proj" ] && cat "$DIR/bridge/select.lua"
   return 0
 }
-lua=$(mktemp); chk=$(mktemp); got=$(mktemp); trap 'rm -f "$lua" "$chk" "$got"' EXIT
+lua=$(mktemp); trap 'rm -f "$lua"' EXIT
 { head_lua; cat "$DIR/bridge/temp.lua" "$DIR/bridge/stems.lua"; } > "$lua"
 if $luaonly; then cat "$lua"; exit 0; fi
 
-# проект на nb = локальная копия, иначе отпечатки посчитаны не по тому, что рендерится
-{ head_lua; cat "$DIR/bridge/temp.lua" "$DIR/bridge/rppcopy.lua"; } > "$chk"
-res=$(bash "$DIR/bridge/bridge.sh" "$chk") || { echo "$res"; exit 1; }
-RPPNB=$(echo "$res" | grep '^RPP' | cut -f2)
-scp -q "$HOST:${RPPNB//\\//}" "$got"
-printf 'out(os.remove(%s))\n' "$(q "$RPPNB")" | bash "$DIR/bridge/bridge.sh" >/dev/null
-if echo "$res" | grep -q $'^dirty\t1'; then echo "проект на nb не сохранён (dirty): сохранить или спросить пользователя" >&2; exit 1; fi
-# сверка по отпечаткам, не побайтно: выделение и время сохранения в .rpp меняются без правок
-cp "$got" "$got.rpp"
-if [ "$(python3 "$DIR/freezelib.py" todo "$LOCAL" | cut -f1,2,4,6)" != "$(python3 "$DIR/freezelib.py" todo "$LOCAL" --rpp "$got.rpp" | cut -f1,2,4,6)" ]; then
-  rm -f "$got.rpp"; echo "локальная копия проекта расходится с проектом на nb в треках с VST: скачать заново fetch.sh" >&2; exit 1
-fi
-rm -f "$got.rpp"
+# проект на nb сохранён и совпадает с локальной копией, иначе отпечатки посчитаны не по тому, что рендерится
+bash "$DIR/nbcheck.sh" "$LOCAL" ${proj:+--proj "$proj"}
+
 echo "замораживаю: $(join "${names[@]}")"
 res=$(bash "$DIR/bridge/bridge.sh" -t 900 "$lua") || { echo "$res"; exit 1; }
 echo "$res" | grep -v '^STEM\|^OK' || true

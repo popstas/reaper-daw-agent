@@ -7,13 +7,15 @@
     python3 freezelib.py plan <папка> [--rpp F]          JSON-план: какие треки, точка, отпечаток, cached
     python3 freezelib.py todo <папка> [--rpp F]          то же строками: index, point, cached 0/1, name, after, key
     python3 freezelib.py save <папка> [--rpp F] INDEX...  записать треки в freeze/freeze.json (wav уже скачаны)
+    python3 freezelib.py same A.rpp B.rpp                 код 1 и различия, если проекты расходятся не только временем и выделением
 """
 import argparse, datetime, glob, hashlib, json, os, re, sys
 
 MODELED = frozenset({'sstillwell/hpflpf', 'sstillwell/rbj4eq', 'sstillwell/1175', 'Liteon/presenceeq',
                      'popstas/guitar_noise_gate.jsfx', 'loser/MGA_JSLimiterST'})
 MINOR = ('ReaVerb', 'Liteon/deesser')
-VOLATILE = {'SEL', 'FLOATPOS', 'FLOAT', 'WAK', 'SHOW', 'LASTSEL', 'FXID', 'IID', 'GUID', 'IGUID'}
+VOLATILE = {'SEL', 'FLOATPOS', 'FLOAT', 'WAK', 'SHOW', 'LASTSEL', 'FXID', 'IID', 'GUID', 'IGUID',
+            'WNDRECT', 'DOCKED', 'CFGEDITVIEW', 'CFGEDIT'}   # окна FX и MIDI-редактора
 FX_START = re.compile(r'\s*<(JS|VST|CLAP)\b')
 
 
@@ -174,9 +176,13 @@ def freeze_status(folder, entry):
     return 'ok' if os.path.exists(os.path.join(folder, entry['file'])) else 'missing'
 
 
-def calib_key(rpp_text):
-    """Отпечаток поправки: отпечатки заморозки + мелкие немоделируемые FX (ReaVerb, де-эссер) треков и мастера."""
+def calib_key(rpp_text, folder=None):
+    """Отпечаток поправки: отпечатки заморозки + мелкие немоделируемые FX (ReaVerb, де-эссер) треков и мастера.
+    С folder - ещё состояние заморозки каждого трека (ok/stale/missing и время): поправка, снятая без заморозки
+    или до перезаморозки, устаревает."""
     parts = [e['key'] for e in plan(rpp_text)]
+    if folder is not None:
+        parts += [f"{freeze_status(folder, e)}:{(freeze_record(folder, e) or {}).get('time', '')}" for e in plan(rpp_text)]
     for fxs in [track_fx(t['text']) for t in split_tracks(rpp_text)] + [master_fx(rpp_text)]:
         parts += [_stable(f['text']) for f in fxs if kind_of(f) == 'minor']
     return _sha(parts)
@@ -230,6 +236,13 @@ def mmss(sec):
     return f"{int(sec // 60)}:{int(round(sec % 60)):02d}"
 
 
+def same_project(a_text, b_text):
+    """Строки, которыми различаются два .rpp без учёта времени сохранения и изменчивых строк (выделение, окна)."""
+    norm = lambda t: [l.strip() for l in _stable(t.replace('\r', '')).split('\n')[1:] if l.strip()]
+    import difflib
+    return [l for l in difflib.unified_diff(norm(a_text), norm(b_text), lineterm='', n=0) if l[:1] in '+-' and l[:3] not in ('+++', '---')]
+
+
 def find_rpp(folder, rpp=None):
     if rpp: return rpp if os.path.isabs(rpp) else os.path.join(folder, rpp)
     cands = [f for f in glob.glob(os.path.join(folder, '*.rpp')) + glob.glob(os.path.join(folder, '*.RPP'))
@@ -243,9 +256,13 @@ def read_rpp(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('cmd', choices=['plan', 'todo', 'save']); ap.add_argument('dir'); ap.add_argument('--rpp')
-    ap.add_argument('index', nargs='*', type=int)
+    ap.add_argument('cmd', choices=['plan', 'todo', 'save', 'same']); ap.add_argument('dir'); ap.add_argument('--rpp')
+    ap.add_argument('index', nargs='*')
     a = ap.parse_args()
+    if a.cmd == 'same':   # same A.rpp B.rpp: код 1 и различия, если проекты расходятся не только временем и выделением
+        d = same_project(read_rpp(a.dir), read_rpp(a.index[0]))
+        print('\n'.join(d[:20])); sys.exit(1 if d else 0)
+    a.index = [int(i) for i in a.index]
     text = read_rpp(find_rpp(a.dir, a.rpp)); p = plan(text)
     if a.cmd == 'plan':
         print(json.dumps([dict(e, cached=freeze_status(a.dir, e) == 'ok') for e in p], ensure_ascii=False))
