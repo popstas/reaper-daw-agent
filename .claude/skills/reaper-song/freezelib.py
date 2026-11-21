@@ -15,7 +15,8 @@ MODELED = frozenset({'sstillwell/hpflpf', 'sstillwell/rbj4eq', 'sstillwell/1175'
                      'popstas/guitar_noise_gate.jsfx', 'loser/MGA_JSLimiterST'})
 MINOR = ('ReaVerb', 'Liteon/deesser')
 VOLATILE = {'SEL', 'FLOATPOS', 'FLOAT', 'WAK', 'SHOW', 'LASTSEL', 'FXID', 'IID', 'GUID', 'IGUID',
-            'WNDRECT', 'DOCKED', 'CFGEDITVIEW', 'CFGEDIT'}   # окна FX и MIDI-редактора
+            'WNDRECT', 'DOCKED', 'CFGEDITVIEW', 'CFGEDIT',   # окна FX и MIDI-редактора
+            'CURSOR', 'ZOOM', 'VZOOMEX', 'SELECTION', 'SELECTION2'}   # курсор, зум, выделение времени
 FX_START = re.compile(r'\s*<(JS|VST|CLAP)\b')
 
 

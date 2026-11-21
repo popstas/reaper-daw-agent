@@ -145,6 +145,11 @@ def test_same_project(tmp_path, rpp_text):
     b.write_text(rpp_text.replace('1763700000', '1763799999').replace('SEL 0', 'SEL 1')   # время сохранения, выделение
                  .replace('WNDRECT 200 200 833 318', 'WNDRECT 10 874 716 262'))                    # размер окна FX
     assert subprocess.run(cli, capture_output=True, text=True).returncode == 0
+    # курсор, зум, выделение времени - вид, не звук (21.11: выделенный на слух участок валил рендер «до»)
+    view = '\n'.join(['  CURSOR 76', '  ZOOM 18.0091 1279 0', '  VZOOMEX 6 0', '  SELECTION 89.5 91.5', '  SELECTION2 89.5 91.5'])
+    b.write_text(rpp_text.replace('\n', '\n' + view + '\n', 1))
+    r = subprocess.run(cli, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout
     b.write_text(rpp_text.replace('VOLPAN 1 0 -1 -1 1', 'VOLPAN 0.5 0 -1 -1 1'))          # фейдер mic
     r = subprocess.run(cli, capture_output=True, text=True)
     assert r.returncode == 1 and 'VOLPAN' in r.stdout
