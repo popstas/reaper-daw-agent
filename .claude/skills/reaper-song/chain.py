@@ -10,6 +10,11 @@
   --bypass 'ТРЕК:FX'                выключить звено (BYPASS 1), не удаляя
   --drop 'ТРЕК'                     удалить трек; глубина папки переходит предыдущему треку (ISBUS). Папку с детьми не удаляет
   --header KEY[,KEY...]             строки шапки проекта (TIMELOCKMODE, SAMPLERATE, RENDER_PATTERN, ...) - из шаблона
+  --name 'СТАРОЕ=НОВОЕ'             переименовать трек
+  --item 'ТРЕК=ФАЙЛ@SOFFS+LENGTH[,FI,FO]'  айтем WAVE с позиции 0: кусок файла (путь от папки проекта) с SOFFS длиной
+                                    LENGTH секунд, фейды FI/FO (по умолчанию 0.01)
+  --addjs 'ТРЕК=JS:П1 П2 ...[@ПОСЛЕ]'  новое звено JSFX (JS - путь в Effects, popstas/ms_decode.jsfx) с параметрами,
+                                    добитыми '-' до 64; без @ - в начало цепочки
 
 Без -o файл проекта перезаписывается. Печатает каждую правку.
 """
@@ -162,6 +167,51 @@ def header(lines, tpl, keys):
         lines[i] = tpl[j]
 
 
+def rename(lines, spec):
+    old, new = spec.split('=', 1)
+    _, s, e = find_track(lines, old)
+    k = next(i for i in range(s, e) if indent(lines[i]) == indent(lines[s]) + 2 and lines[i].strip().startswith('NAME '))
+    lines[k] = ' ' * indent(lines[k]) + 'NAME ' + (f'"{new}"' if ' ' in new else new)
+    print(f'name\t{old} -> {new}')
+
+
+def new_id(): return '{' + str(uuid.uuid4()).upper() + '}'
+
+
+def item(lines, spec):
+    tr, rest = spec.split('=', 1)
+    f, rng = rest.rsplit('@', 1)
+    parts = rng.split(',')
+    soffs, length = (float(v) for v in parts[0].split('+'))
+    fi, fo = (float(parts[1]) if len(parts) > 1 else 0.01), (float(parts[2]) if len(parts) > 2 else 0.01)
+    iid = max([int(l.split()[1]) for l in lines if l.strip().startswith('IID ')] + [0]) + 1
+    _, s, e = find_track(lines, tr)
+    ind = ' ' * (indent(lines[s]) + 2)
+    name = f.replace('\\', '/').split('/')[-1]
+    block = ['<ITEM', '  POSITION 0', '  SNAPOFFS 0', f'  LENGTH {length:g}', '  LOOP 0', '  ALLTAKES 0',
+             f'  FADEIN 1 {fi:g} 0 1 0 0 0', f'  FADEOUT 1 {fo:g} 0 1 0 0 0', '  MUTE 0 0', '  SEL 0', f'  IGUID {new_id()}',
+             f'  IID {iid}', f'  NAME "{name}"', '  VOLPAN 1 0 1 -1', f'  SOFFS {soffs:g}', '  PLAYRATE 1 1 0 -1 0 0.0025',
+             '  CHANMODE 0', f'  GUID {new_id()}', '  <SOURCE WAVE', f'    FILE "{f}"', '  >', '>']
+    lines[e:e] = [ind + l for l in block]
+    print(f'item\t{tr}\t{f}\tSOFFS {soffs:g} LENGTH {length:g}')
+
+
+def addjs(lines, spec):
+    tr, rest = spec.split('=', 1)
+    after = None
+    if '@' in rest: rest, after = rest.rsplit('@', 1)
+    js, params = rest.split(':', 1)
+    tok = params.split()
+    if len(tok) > 64: raise ValueError(f'{js}: параметров больше 64')
+    cs, ce = chain(lines, tr); ents = entries(lines, cs, ce)
+    pos = pick(ents, after, tr)[1] if after else (ents[0][0] if ents else ce)
+    ind = ' ' * (indent(lines[cs]) + 2)
+    block = ['BYPASS 0 0 0', f'<JS {js} ""', '  ' + ' '.join(tok + ['-'] * (64 - len(tok))), '>', 'FLOATPOS 0 0 0 0',
+             f'FXID {new_id()}', 'WAK 0 0']
+    lines[pos:pos] = [ind + l for l in block]
+    print(f'addjs\t{tr}\t{js}\t{" ".join(tok)}{" после " + after if after else ""}')
+
+
 def check(lines):
     """Блоки сходятся, параметры JSFX - 64 токена."""
     depth = 0
@@ -180,12 +230,17 @@ def main(argv=None):
     ap.add_argument('rpp'); ap.add_argument('template'); ap.add_argument('-o', '--out')
     ap.add_argument('--copy', action='append', default=[]); ap.add_argument('--bypass', action='append', default=[])
     ap.add_argument('--drop', action='append', default=[]); ap.add_argument('--header', action='append', default=[])
+    ap.add_argument('--name', action='append', default=[]); ap.add_argument('--item', action='append', default=[])
+    ap.add_argument('--addjs', action='append', default=[])
     a = ap.parse_args(argv)
     lines, tpl = read(a.rpp), read(a.template)
     try:
         for h in a.header: header(lines, tpl, h)
         for d in a.drop: drop(lines, d)
+        for n in a.name: rename(lines, n)
+        for it in a.item: item(lines, it)
         for c in a.copy: copy(lines, tpl, c)
+        for j in a.addjs: addjs(lines, j)
         for b in a.bypass: bypass(lines, b)
         check(lines)
     except ValueError as e:

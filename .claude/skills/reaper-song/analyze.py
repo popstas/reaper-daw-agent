@@ -11,7 +11,8 @@ ReaVerb, де-эссер и неизвестные плагины не моде�
 """
 import argparse, json, os, re, sys
 import numpy as np, soundfile as sf, pyloudnorm as pyln
-from scipy.signal import lfilter, butter, sosfilt, welch
+from scipy.signal import lfilter, butter, sosfilt, welch, resample_poly
+from math import gcd
 from numba import njit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import freezelib
@@ -54,7 +55,8 @@ def build(track, root):
     y = np.zeros((int(end * SR) + 1, 2))
     for it in its:
         x, sr = sf.read(os.path.join(root, it['file']), always_2d=True)
-        assert sr == SR, f"{it['file']}: {sr} Гц"
+        if sr != SR:  # REAPER ресемплирует источник под проект (H2e пишет 96 кГц)
+            g = gcd(SR, sr); x = resample_poly(x, SR // g, sr // g, axis=0)
         if it['chan'] == 2: x = np.repeat(x.mean(1, keepdims=True), 2, 1)
         elif it['chan'] == 3: x = np.repeat(x[:, :1], 2, 1)
         elif it['chan'] == 4: x = np.repeat(x[:, 1:2], 2, 1)
@@ -220,7 +222,14 @@ def mga(x, p, stats):
 
 FX = {'sstillwell/hpflpf': lambda x, p, s: hpflpf(x, p), 'sstillwell/rbj4eq': lambda x, p, s: rbj4eq(x, p),
       'sstillwell/1175': c1175, 'Liteon/presenceeq': lambda x, p, s: presenceeq(x, p),
-      'popstas/guitar_noise_gate.jsfx': noise_gate, 'loser/MGA_JSLimiterST': mga}
+      'popstas/guitar_noise_gate.jsfx': noise_gate, 'loser/MGA_JSLimiterST': mga,
+      'popstas/ms_decode.jsfx': lambda x, p, s: ms_decode(x, p)}
+
+def ms_decode(x, p):
+    """popstas/ms_decode.jsfx: левый вход - mid, правый - side; L = M + w*S, R = M - w*S, затем Gain."""
+    w, g = num(p, 0, 100) / 100, 10 ** (num(p, 1, 0) / 20)
+    m, s = x[:, 0], x[:, 1]
+    return np.stack([m + w * s, m - w * s], 1) * g
 
 def run_chain(x, fxs, label):
     stats, skipped = {}, []

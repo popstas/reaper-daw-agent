@@ -1,0 +1,26 @@
+desc:Mid/Side Decoder (popstas)
+//tags: utility mid-side
+// Сырая MS-запись (Zoom H2e *_RAW.WAV): левый канал - mid, правый - side.
+// Выход: L = M + w*S, R = M - w*S, затем Gain. w = Width / 100: 0 - моно mid, 100 - полная ширина.
+// Модель - ms_decode() в analyze.py скилла reaper-song; меняешь формулу здесь - меняй и там.
+
+slider1:width=100<0,200,1>Width (%)
+slider2:gain_db=0<-24,24,0.1>Gain (dB)
+
+in_pin:mid
+in_pin:side
+out_pin:left
+out_pin:right
+
+@init
+ext_tail_size = -2;
+
+@slider
+w = width / 100;
+g = 10 ^ (gain_db / 20);
+
+@sample
+m = spl0;
+s = spl1;
+spl0 = (m + w * s) * g;
+spl1 = (m - w * s) * g;

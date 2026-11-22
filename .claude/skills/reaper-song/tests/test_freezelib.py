@@ -83,7 +83,7 @@ def test_calib_key_minor_fx_only(rpp_text):
 
 def test_sets():
     assert MODELED == frozenset({'sstillwell/hpflpf', 'sstillwell/rbj4eq', 'sstillwell/1175', 'Liteon/presenceeq',
-                                 'popstas/guitar_noise_gate.jsfx', 'loser/MGA_JSLimiterST'})
+                                 'popstas/guitar_noise_gate.jsfx', 'loser/MGA_JSLimiterST', 'popstas/ms_decode.jsfx'})
     assert MINOR == ('ReaVerb', 'Liteon/deesser')
 
 

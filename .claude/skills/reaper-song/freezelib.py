@@ -12,7 +12,7 @@
 import argparse, datetime, glob, hashlib, json, os, re, sys
 
 MODELED = frozenset({'sstillwell/hpflpf', 'sstillwell/rbj4eq', 'sstillwell/1175', 'Liteon/presenceeq',
-                     'popstas/guitar_noise_gate.jsfx', 'loser/MGA_JSLimiterST'})
+                     'popstas/guitar_noise_gate.jsfx', 'loser/MGA_JSLimiterST', 'popstas/ms_decode.jsfx'})
 MINOR = ('ReaVerb', 'Liteon/deesser')
 VOLATILE = {'SEL', 'FLOATPOS', 'FLOAT', 'WAK', 'SHOW', 'LASTSEL', 'FXID', 'IID', 'GUID', 'IGUID',
             'WNDRECT', 'DOCKED', 'CFGEDITVIEW', 'CFGEDIT',   # окна FX и MIDI-редактора

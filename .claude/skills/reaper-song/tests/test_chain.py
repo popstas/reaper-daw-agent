@@ -122,3 +122,14 @@ def test_header_from_template(tmp_path):
 def test_ambiguous_fx_refused(tmp_path):
     r, _ = run(tmp_path, '--copy', 'guitar 1=guitar:sstillwell')
     assert r.returncode == 1 and 'найдено' in r.stderr
+
+
+def test_rename_item_addjs(tmp_path):
+    r, out = run(tmp_path, '--drop', 'guitar 2', '--drop', 'guitar 1', '--name', 'guitar=room mic',
+                 '--item', 'room mic=x_RAW.WAV@154.6+173.9,0.2,0.5', '--addjs', 'room mic=popstas/ms_decode.jsfx:70 0')
+    assert r.returncode == 0, r.stderr
+    assert 'NAME "room mic"' in out and 'ISBUS 0 0' in out
+    tr = out[out.index('NAME "room mic"'):]
+    assert 'SOFFS 154.6' in tr and 'LENGTH 173.9' in tr and 'FADEIN 1 0.2 ' in tr and 'FILE "x_RAW.WAV"' in tr
+    js = tr[tr.index('<JS popstas/ms_decode.jsfx'):].split('\r\n')[1].split()
+    assert js[:3] == ['70', '0', '-'] and len(js) == 64
