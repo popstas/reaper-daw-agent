@@ -30,8 +30,19 @@ local function addfx(a)
   out("addfx", a[1], nm, "позиция " .. (idx + 1))
   return tr, idx
 end
+local function copyfx(a)
+  -- a = {трек-приёмник, трек-источник, FX источника (подстрока), после какого FX приёмника или nil - в конец}
+  local dst = track(a[1])
+  local src, si = fx(a[2], a[3])
+  local idx = reaper.TrackFX_GetCount(dst)
+  if a[4] then local _, after = fx(dst, a[4]); idx = after + 1 end
+  reaper.TrackFX_CopyToTrack(src, si, dst, idx, false)
+  local _, nm = reaper.TrackFX_GetFXName(dst, idx, "")
+  out("copyfx", a[1], nm, "из " .. a[2], "позиция " .. (idx + 1))
+end
 local ok, err = pcall(function()
   for _, a in ipairs(A.addfx or {}) do addfx(a) end
+  for _, a in ipairs(A.copyfx or {}) do copyfx(a) end
   for _, s in ipairs(A.set) do
     local tr, k = fx(s[1], s[2])
     local p = tonumber(s[3]) or param(tr, k, s[3])

@@ -8,6 +8,8 @@
 #   --bypass ТРЕК:FX            выключить FX (подстрока имени или fx_ident)
 #   --addfx ТРЕК:ИМЯ[@ПОСЛЕ]   вставить FX (ИМЯ как в TrackFX_AddByName: JS:guitar/chorus) после FX с подстрокой ПОСЛЕ
 #                               (без @ - в конец); ставится до --set, так что --set может настроить его
+#   --copyfx ТРЕК:ИСТ:FX[@ПОСЛЕ] копия FX с трека ИСТ (подстрока имени) со всем состоянием (ReaVerb с импульсом) в ТРЕК
+#                               после FX с подстрокой ПОСЛЕ (без @ - в конец); ставится после --addfx и до --set
 #   --set ТРЕК:FX:ПАРАМ=ЗНАЧ    параметр FX: номер или подстрока имени; JSFX - родные единицы, VST - 0..1
 #   --vol ТРЕК=dB               фейдер
 #   --itemvol ТРЕК=dB           громкость всех айтемов трека (до цепочки), как в variants.py
@@ -27,13 +29,14 @@
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 . "$DIR/env.sh"
-solo=() mute=() bypass=() addfx=() set=() vol=() itemvol=(); proj=''; nomaster=false; keep=false; final=false; stems=false; calib=''
+solo=() mute=() bypass=() addfx=() copyfx=() set=() vol=() itemvol=(); proj=''; nomaster=false; keep=false; final=false; stems=false; calib=''
 while [ $# -gt 0 ]; do
   case $1 in
     --solo) solo+=("$2"); shift 2;;
     --mute) mute+=("$2"); shift 2;;
     --bypass) bypass+=("$2"); shift 2;;
     --addfx) addfx+=("$2"); shift 2;;
+    --copyfx) copyfx+=("$2"); shift 2;;
     --set) set+=("$2"); shift 2;;
     --vol) vol+=("$2"); shift 2;;
     --itemvol) itemvol+=("$2"); shift 2;;
@@ -81,7 +84,7 @@ if $stems; then
   exit 0
 fi
 {
-  echo "local A = {name = $(q "$NAME"), nomaster = $nomaster, final = $final, solo = {}, mute = {}, bypass = {}, addfx = {}, set = {}, vol = {}, itemvol = {}}"
+  echo "local A = {name = $(q "$NAME"), nomaster = $nomaster, final = $final, solo = {}, mute = {}, bypass = {}, addfx = {}, copyfx = {}, set = {}, vol = {}, itemvol = {}}"
   for s in "${solo[@]+"${solo[@]}"}"; do echo "table.insert(A.solo, $(q "$s"))"; done
   for s in "${mute[@]+"${mute[@]}"}"; do echo "table.insert(A.mute, {$(q "${s%%=*}"), ${s#*=}})"; done
   for s in "${bypass[@]+"${bypass[@]}"}"; do echo "table.insert(A.bypass, {$(q "${s%%:*}"), $(q "${s#*:}")})"; done
@@ -89,6 +92,11 @@ fi
     t=${s%%:*}; r=${s#*:}
     if [[ $r == *@* ]]; then echo "table.insert(A.addfx, {$(q "$t"), $(q "${r%@*}"), $(q "${r##*@}")})"
     else echo "table.insert(A.addfx, {$(q "$t"), $(q "$r")})"; fi
+  done
+  for s in "${copyfx[@]+"${copyfx[@]}"}"; do
+    t=${s%%:*}; r=${s#*:}; src=${r%%:*}; r=${r#*:}
+    if [[ $r == *@* ]]; then echo "table.insert(A.copyfx, {$(q "$t"), $(q "$src"), $(q "${r%@*}"), $(q "${r##*@}")})"
+    else echo "table.insert(A.copyfx, {$(q "$t"), $(q "$src"), $(q "$r")})"; fi
   done
   for s in "${set[@]+"${set[@]}"}"; do
     t=${s%%:*}; r=${s#*:}; f=${r%:*}; pv=${r##*:}

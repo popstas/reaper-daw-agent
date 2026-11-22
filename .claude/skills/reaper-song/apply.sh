@@ -4,6 +4,8 @@
 # Опции - как у render.sh, но правки остаются:
 #   --addfx ТРЕК:ИМЯ[@ПОСЛЕ]   вставить FX (ИМЯ как в TrackFX_AddByName: JS:guitar/chorus) после FX с подстрокой ПОСЛЕ
 #                               (без @ - в конец); ставится до --set, так что --set может настроить его
+#   --copyfx ТРЕК:ИСТ:FX[@ПОСЛЕ] копия FX с трека ИСТ (подстрока имени) со всем состоянием (ReaVerb с импульсом) в ТРЕК
+#                               после FX с подстрокой ПОСЛЕ (без @ - в конец); ставится после --addfx и до --set
 #   --set ТРЕК:FX:ПАРАМ=ЗНАЧ    параметр FX: номер (позиция токена в .rpp минус 1) или подстрока имени; JSFX - родные единицы
 #   --vol ТРЕК=dB               фейдер
 #   --itemvol ТРЕК=dB           громкость всех айтемов трека
@@ -11,10 +13,11 @@
 # Печатает было -> стало по каждой правке.
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
-addfx=() set=() vol=() itemvol=()
+addfx=() copyfx=() set=() vol=() itemvol=()
 while [ $# -gt 0 ]; do
   case $1 in
     --addfx) addfx+=("$2"); shift 2;;
+    --copyfx) copyfx+=("$2"); shift 2;;
     --set) set+=("$2"); shift 2;;
     --vol) vol+=("$2"); shift 2;;
     --itemvol) itemvol+=("$2"); shift 2;;
@@ -26,11 +29,16 @@ PROJ=${1:?часть имени проекта}
 q() { printf '[==[%s]==]' "$1"; }
 lua=$(mktemp); trap 'rm -f "$lua"' EXIT
 {
-  echo "local A = {proj = $(q "$PROJ"), addfx = {}, set = {}, vol = {}, itemvol = {}}"
+  echo "local A = {proj = $(q "$PROJ"), addfx = {}, copyfx = {}, set = {}, vol = {}, itemvol = {}}"
   for s in "${addfx[@]+"${addfx[@]}"}"; do
     t=${s%%:*}; r=${s#*:}
     if [[ $r == *@* ]]; then echo "table.insert(A.addfx, {$(q "$t"), $(q "${r%@*}"), $(q "${r##*@}")})"
     else echo "table.insert(A.addfx, {$(q "$t"), $(q "$r")})"; fi
+  done
+  for s in "${copyfx[@]+"${copyfx[@]}"}"; do
+    t=${s%%:*}; r=${s#*:}; src=${r%%:*}; r=${r#*:}
+    if [[ $r == *@* ]]; then echo "table.insert(A.copyfx, {$(q "$t"), $(q "$src"), $(q "${r%@*}"), $(q "${r##*@}")})"
+    else echo "table.insert(A.copyfx, {$(q "$t"), $(q "$src"), $(q "$r")})"; fi
   done
   for s in "${set[@]+"${set[@]}"}"; do
     t=${s%%:*}; r=${s#*:}; f=${r%:*}; pv=${r##*:}

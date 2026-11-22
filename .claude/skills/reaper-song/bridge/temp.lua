@@ -41,9 +41,23 @@ local function addfx(a)
   out("addfx", a[1], nm, "позиция " .. (cur.idx + 1))
 end
 
--- правки render.sh: addfx, solo, mute, nomaster, bypass, set, vol, itemvol
+local function copyfx(a)
+  -- a = {трек-приёмник, трек-источник, FX источника (подстрока), после какого FX приёмника (подстрока) или nil - в конец}
+  -- копия со всем состоянием (ReaVerb с импульсом, пресеты VST), в отличие от addfx
+  local dst = track(a[1])
+  local src, si = fx(a[2], a[3])
+  local idx = reaper.TrackFX_GetCount(dst)
+  if a[4] then local _, after = fx(dst, a[4]); idx = after + 1 end
+  reaper.TrackFX_CopyToTrack(src, si, dst, idx, false)
+  temp_push(function() reaper.TrackFX_Delete(dst, idx) end)
+  local _, nm = reaper.TrackFX_GetFXName(dst, idx, "")
+  out("copyfx", a[1], nm, "из " .. a[2], "позиция " .. (idx + 1))
+end
+
+-- правки render.sh: addfx, copyfx, solo, mute, nomaster, bypass, set, vol, itemvol
 function temp_apply(A)
   for _, a in ipairs(A.addfx or {}) do addfx(a) end
+  for _, a in ipairs(A.copyfx or {}) do copyfx(a) end
   for _, n in ipairs(A.solo or {}) do temp_trackinfo(track(n), "I_SOLO", 1) end
   for _, m in ipairs(A.mute or {}) do temp_trackinfo(track(m[1]), "B_MUTE", m[2]); out("mute", m[1], m[2]) end
   if A.nomaster then temp_trackinfo(reaper.GetMasterTrack(0), "I_FXEN", 0) end

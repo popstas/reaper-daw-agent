@@ -1,0 +1,32 @@
+desc: Mono low - side highpass [popstas]
+// Низ в моно: M = (L+R)/2 не трогается, у S = (L-R)/2 срезается низ HPF Linkwitz-Riley 24 dB/окт (две биквады
+// Баттерворта). Ниже Frequency - моно, выше - исходное стерео; моно-сумма (L+R) не меняется вообще.
+// Amount 100 % - низ S убран полностью, 0 % - эффект выключен. В модели analyze.py его нет: проект с ним
+// мерить рендером (spacecheck.py: S−M в 40-100 Гц).
+
+slider1:120<40,300,1>Frequency (Hz)
+slider2:100<0,100,1>Amount (%)
+
+@init
+function hp_coef(f) (
+  w = 2 * $pi * f / srate; cs = cos(w); al = sin(w) / (2 * sqrt(0.5));
+  a0 = 1 + al;
+  b0 = (1 + cs) / 2 / a0; b1 = -(1 + cs) / a0; b2 = b0;
+  a1 = -2 * cs / a0; a2 = (1 - al) / a0;
+);
+x1 = x2 = y1 = y2 = 0; u1 = u2 = v1 = v2 = 0;
+
+@slider
+hp_coef(slider1);
+amt = slider2 / 100;
+
+@sample
+m = (spl0 + spl1) * 0.5;
+s = (spl0 - spl1) * 0.5;
+y = b0 * s + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+x2 = x1; x1 = s; y2 = y1; y1 = y;
+v = b0 * y + b1 * u1 + b2 * u2 - a1 * v1 - a2 * v2;
+u2 = u1; u1 = y; v2 = v1; v1 = v;
+s2 = s + amt * (v - s);
+spl0 = m + s2;
+spl1 = m - s2;
