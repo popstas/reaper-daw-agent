@@ -18,7 +18,7 @@
 
 Без -o файл проекта перезаписывается. Печатает каждую правку.
 """
-import argparse, re, sys, uuid
+import argparse, re, shlex, sys, uuid
 
 
 def read(path):
@@ -220,7 +220,7 @@ def check(lines):
         if t.startswith('<'): depth += 1
         elif t == '>': depth -= 1
         if t.startswith('<JS '):
-            n = len(lines[i + 1].split())
+            n = len(shlex.split(lines[i + 1]))   # строковый слайдер в кавычках с пробелами - один токен (amp-model)
             if n != 64: raise ValueError(f'{t}: {n} токенов вместо 64')
     if depth: raise ValueError(f'блоки не сходятся: {depth:+d}')
 

@@ -165,12 +165,26 @@ function temp_unsaved_tracks()
   return diff
 end
 
+-- Автоактивация барабанов (настроена пользователем 22.11) открывает и закрывает окно цепочки: undo «Close FX chain: Track N drums».
+-- Такой dirty тоже сохранять (решение пользователя 22.11), если на треке N стоит MT-PowerDrumKit.
+function temp_drumkit_undo(u)
+  if u:find("MT%-PowerDrumKit") then return true end
+  local n = tonumber(u:match("^%a+ FX chain: Track (%d+)"))
+  local tr = n and reaper.GetTrack(0, n - 1)
+  if not tr then return false end
+  for k = 0, reaper.TrackFX_GetCount(tr) - 1 do
+    local _, name = reaper.TrackFX_GetFXName(tr, k, "")
+    if name:find("MT%-PowerDrumKit") then return true end
+  end
+  return false
+end
+
 function temp_save_drumkit_dirty()
-  if reaper.IsProjectDirty(0) ~= 1 or not (reaper.Undo_CanUndo2(0) or ""):find("MT%-PowerDrumKit") then return end
+  if reaper.IsProjectDirty(0) ~= 1 or not temp_drumkit_undo(reaper.Undo_CanUndo2(0) or "") then return end
   local diff = temp_unsaved_tracks()
   if diff and #diff == 0 then
     reaper.Main_SaveProject(0, false)
-    out("сохранён: несохранён был только параметр MT-PowerDrumKit, плагин меняет его сам")
+    out("сохранён: несохранено было только состояние MT-PowerDrumKit (плагин или его автоактивация)")
   else
     out("не сохраняю: кроме MT-PowerDrumKit не сохранены правки треков " .. table.concat(diff or {"?"}, ", "))
   end

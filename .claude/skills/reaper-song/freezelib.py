@@ -279,14 +279,14 @@ def main():
         path = os.path.join(a.dir, e['file'])
         if not os.path.exists(path): sys.exit(f"нет {e['file']}")
         pk = wav_peak(path)
-        if pk is not None and pk < 1e-5:   # ниже -100 dBFS: VSTi не звучит (MT-PowerDrumKit не активирован в этом запуске REAPER)
+        if pk is not None and pk < 1e-5:   # ниже -100 dBFS: VSTi не звучит (у MT-PowerDrumKit - сбой автоактивации)
             os.remove(path); silent.append(e['name']); continue
         data['tracks'][str(i)] = dict(e, time=now)
         print(f"заморожено: {e['name']} после {e['after']}, {mmss(wav_seconds(os.path.join(a.dir, e['file'])))}")
     save_json(fz, 'freeze.json', data)
     if silent:
-        sys.exit(f"стем - тишина, не заморожен: {', '.join(silent)}. VSTi не звучит: активировать плагин "
-                 f"(MT-PowerDrumKit - открыть его окно после открытия проекта) и повторить freeze.sh")
+        sys.exit(f"стем - тишина, не заморожен: {', '.join(silent)}. VSTi не звучит: MT-PowerDrumKit активируется автоматически - проверить, что "
+                 f"автоактивация сработала (или активировать плагин вручную), и повторить freeze.sh")
 
 
 if __name__ == '__main__':

@@ -46,8 +46,8 @@ def main():
         if name not in m0['tracks']: notes.append(f'{name}: нет в модели, без поправки'); continue
         tracks[name] = round(I - m0['tracks'][name]['lufs'], 2)
     # тихий стем трека модели: в мастере рендера его нет, а в модели есть - поправка мастера вышла бы неверной
-    if silent: sys.exit(f"стем - тишина: {', '.join(silent)}. VSTi не звучит: активировать плагин (MT-PowerDrumKit - открыть его окно "
-                        f"после открытия проекта) и повторить рендер «до»; calib.json не записан")
+    if silent: sys.exit(f"стем - тишина: {', '.join(silent)}. VSTi не звучит: MT-PowerDrumKit активируется автоматически - проверить, что "
+                        f"автоактивация сработала (или активировать плагин вручную), и повторить рендер «до»; calib.json не записан")
     data = dict(key=freezelib.calib_key(text, a.dir), time=datetime.datetime.now().isoformat(timespec='minutes'), tracks=tracks, master=None)
     freezelib.save_json(a.dir, 'calib.json', data)
     m1 = model(a.dir, *extra)
