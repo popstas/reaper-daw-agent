@@ -269,8 +269,11 @@ def main():
               f"фейд {G[1]['fo']:.2f} против {p['fade']:.2f}")
         if p['mic']:
             print(f"  голос: начало {ms(ms0)} ({d(ms0, p['mic'][0])}), конец {ms(ms1)} ({d(ms1, p['mic'][1])})")
+        mb_ = p['mic'][:2] if p['mic'] else (p['cut0'], p['cut1'])
+        print(f"\nприменить: bash trim.sh \"{os.path.basename(path)}\" \"{gname}={p['cut0']:.3f}-{p['cut1']:.3f},{p['fade']:.2f}\" "
+              f"\"{mname}={mb_[0]:.3f}-{mb_[1]:.3f}\"")
         if a.preview:
-            mb = p['mic'][:2] if p['mic'] else (p['cut0'], p['cut1'])
+            mb = mb_
             spots = [s for s in (
                 ('guitar_start', 'начало гитары', gs0, p['cut0'], None, None),
                 ('guitar_end', 'конец гитары', gs1, p['cut1'], G[1]['fo'], p['fade']),
