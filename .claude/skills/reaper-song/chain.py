@@ -15,10 +15,15 @@
                                     LENGTH секунд, фейды FI/FO (по умолчанию 0.01)
   --addjs 'ТРЕК=JS:П1 П2 ...[@ПОСЛЕ]'  новое звено JSFX (JS - путь в Effects, popstas/ms_decode.jsfx) с параметрами,
                                     добитыми '-' до 64; без @ - в начало цепочки
+  --untrim                          снять обрезку: айтемы WAVE трека - по одному на файл, весь файл с позиции 0, фейды 10 мс
+                                    (громкость айтема та же; MIDI не трогается). Пути FILE - от папки проекта
+  --marker 'СЕК=ИМЯ'                маркер на позиции СЕК (номера - по порядку времени)
+  --trim 'ТРЕК=S0-S1[,FO]'          границы трека во времени файла: первому айтему SOFFS S0 (звук на том же месте таймлайна),
+                                    последнему конец на S1 и фейд FO с; айтемы между ними (врезки) не трогаются
 
 Без -o файл проекта перезаписывается. Печатает каждую правку.
 """
-import argparse, re, shlex, sys, uuid
+import argparse, os, re, shlex, sys, uuid
 
 
 def read(path):
@@ -196,6 +201,122 @@ def item(lines, spec):
     print(f'item\t{tr}\t{f}\tSOFFS {soffs:g} LENGTH {length:g}')
 
 
+def wav_seconds(path):
+    """Длина WAV по заголовку (fmt и data), в том числе 32 bit float - модуль wave его не читает."""
+    import struct
+    with open(path, 'rb') as f:
+        if f.read(12)[8:12] != b'WAVE': raise ValueError(f'{path}: не WAV')
+        rate = align = None
+        while True:
+            h = f.read(8)
+            if len(h) < 8: raise ValueError(f'{path}: нет data')
+            cid, size = h[:4], struct.unpack('<I', h[4:])[0]
+            if cid == b'fmt ':
+                fmt = f.read(size); rate, align = struct.unpack('<I', fmt[4:8])[0], struct.unpack('<H', fmt[12:14])[0]
+            elif cid == b'data':
+                return size / (rate * align)
+            else:
+                f.seek(size + (size & 1), 1)
+
+
+def untrim(lines, root):
+    """Айтемы WAVE каждого трека - по одному на файл, на весь файл с позиции 0, фейды 10 мс; громкость айтема остаётся.
+    MIDI и прочие айтемы не трогаются. Дубли одного прохода выравниваются друг с другом, таймлайн сдвигается на SOFFS."""
+    for name, s, e in reversed(tracks(lines)):
+        seen, i = set(), s
+        while i <= e:
+            if lines[i].strip() != '<ITEM' or indent(lines[i]) != indent(lines[s]) + 2: i += 1; continue
+            ie = block_end(lines, i)
+            f = next((unquote(l.strip()[5:]) for l in lines[i:ie] if l.strip().startswith('FILE ')), None)
+            wave = any(l.strip() == '<SOURCE WAVE' for l in lines[i:ie])
+            if not (f and wave): i = ie + 1; continue
+            if f in seen:
+                del lines[i:ie + 1]; e -= ie + 1 - i; continue
+            seen.add(f)
+            dur = wav_seconds(os.path.join(root, f.replace('\\', '/')))
+            ind = ' ' * (indent(lines[i]) + 2)
+            for j in range(i + 1, ie):
+                k = lines[j].strip().split(' ', 1)[0]
+                if indent(lines[j]) != len(ind): continue
+                if k in ('POSITION', 'SOFFS', 'SNAPOFFS'): lines[j] = f'{ind}{k} 0'
+                elif k == 'LENGTH': lines[j] = f'{ind}LENGTH {dur:g}'
+                elif k in ('FADEIN', 'FADEOUT'):
+                    p = lines[j].split(); p[2] = '0.01'; lines[j] = ind + ' '.join(p)
+            print(f'untrim\t{name}\t{f}\t{dur:g} с')
+            i = ie + 1
+
+
+def wave_items(lines, s, e):
+    """[(начало, конец блока)] айтемов WAVE трека."""
+    out, i = [], s
+    while i <= e:
+        if lines[i].strip() == '<ITEM' and indent(lines[i]) == indent(lines[s]) + 2:
+            ie = block_end(lines, i)
+            if any(l.strip() == '<SOURCE WAVE' for l in lines[i:ie]): out.append((i, ie))
+            i = ie + 1
+        else: i += 1
+    return out
+
+
+def field(lines, i, ie, key):
+    """Индекс строки поля айтема и его значения (токены после ключа)."""
+    ind = indent(lines[i]) + 2
+    for j in range(i + 1, ie):
+        p = lines[j].split()
+        if indent(lines[j]) == ind and p and p[0] == key: return j, p[1:]
+    return None, None
+
+
+def trim(lines, spec):
+    """Границы трека во времени файла: 'ТРЕК=S0-S1[,FO]'. Первому айтему SOFFS = S0 (POSITION и LENGTH сдвигаются - звук
+    остаётся на том же месте таймлайна), последнему LENGTH до S1 и фейд FO. Середина (врезки) не трогается."""
+    tr, rest = spec.split('=', 1)
+    rng, *fo = rest.split(',')
+    s0, s1 = (float(v) for v in rng.split('-'))
+    _, s, e = find_track(lines, tr)
+    its = wave_items(lines, s, e)
+    if not its: raise ValueError(f'{tr}: нет айтемов WAVE')
+    def num(i, ie, k): return float(field(lines, i, ie, k)[1][0])
+    first = min(its, key=lambda b: num(*b, 'SOFFS') if field(lines, *b, 'SOFFS')[0] else 0)
+    last = max(its, key=lambda b: (num(*b, 'SOFFS') if field(lines, *b, 'SOFFS')[0] else 0) + num(*b, 'LENGTH'))
+    def put(i, ie, k, v):
+        j, p = field(lines, i, ie, k)
+        if j is None: raise ValueError(f'{tr}: у айтема нет {k}')
+        lines[j] = ' ' * indent(lines[j]) + ' '.join([k, v] + p[1:])
+    so = num(*first, 'SOFFS'); d = s0 - so
+    pos, ln = num(*first, 'POSITION') + d, num(*first, 'LENGTH') - d
+    if pos < 0 or ln <= 0: raise ValueError(f'{tr}: начало {s0:g} - айтем вышел бы за 0 таймлайна или в ноль длины')
+    put(*first, 'POSITION', f'{pos:.6f}'); put(*first, 'LENGTH', f'{ln:.6f}'); put(*first, 'SOFFS', f'{s0:.6f}')
+    ln_last = s1 - num(*last, 'SOFFS')
+    if ln_last <= 0: raise ValueError(f'{tr}: конец {s1:g} раньше начала последнего айтема')
+    put(*last, 'LENGTH', f'{ln_last:.6f}')
+    if fo:
+        j, p = field(lines, *last, 'FADEOUT')
+        if j is None:   # строки нет - вставить после LENGTH
+            jl, _ = field(lines, *last, 'LENGTH')
+            lines.insert(jl + 1, ' ' * indent(lines[jl]) + f'FADEOUT 1 {float(fo[0]):g} 0 1 0 0 0')
+        else:
+            p[1] = f'{float(fo[0]):g}'; lines[j] = ' ' * indent(lines[j]) + ' '.join(['FADEOUT'] + p)
+    print(f'trim\t{tr}\t{s0:g}-{s1:g}' + (f'\tfade out {float(fo[0]):g}' if fo else ''))
+
+
+def marker(lines, spec):
+    """Маркер в шапке проекта, перед первым треком; номера по порядку времени."""
+    pos, name = spec.split('=', 1)
+    ms = [(float(l.split()[2]), l) for l in lines if l.startswith('  MARKER ')]
+    first = next(i for i, l in enumerate(lines) if l.startswith('  <TRACK') or l.startswith('  MARKER '))
+    rest = [i for i, l in enumerate(lines) if l.startswith('  MARKER ')]
+    for i in reversed(rest): del lines[i]
+    ms.append((float(pos), f'  MARKER 0 {float(pos):g} "{name}" 0 0 1 R'))   # как в abproj.py, проверено в REAPER
+    ms.sort(key=lambda m: m[0])
+    out = []
+    for n, (_, l) in enumerate(ms):
+        tok = l.strip().split(' '); tok[1] = str(n + 1)   # MARKER <номер> <позиция> "имя" ...
+        out.append('  ' + ' '.join(tok))
+    lines[first:first] = out
+    print(f'marker\t{float(pos):g}\t{name}')
+
+
 def addjs(lines, spec):
     tr, rest = spec.split('=', 1)
     after = None
@@ -232,6 +353,8 @@ def main(argv=None):
     ap.add_argument('--drop', action='append', default=[]); ap.add_argument('--header', action='append', default=[])
     ap.add_argument('--name', action='append', default=[]); ap.add_argument('--item', action='append', default=[])
     ap.add_argument('--addjs', action='append', default=[])
+    ap.add_argument('--untrim', action='store_true'); ap.add_argument('--marker', action='append', default=[])
+    ap.add_argument('--trim', action='append', default=[])
     a = ap.parse_args(argv)
     lines, tpl = read(a.rpp), read(a.template)
     try:
@@ -242,6 +365,9 @@ def main(argv=None):
         for c in a.copy: copy(lines, tpl, c)
         for j in a.addjs: addjs(lines, j)
         for b in a.bypass: bypass(lines, b)
+        if a.untrim: untrim(lines, os.path.dirname(os.path.abspath(a.rpp)))
+        for t in a.trim: trim(lines, t)
+        for mk in a.marker: marker(lines, mk)
         check(lines)
     except ValueError as e:
         print(f'ошибка: {e}', file=sys.stderr); return 1
