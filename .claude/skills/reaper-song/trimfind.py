@@ -146,12 +146,17 @@ def propose(take):
     # голос
     vw = 0.1; vs = runs(take.voice(vw), vw, min_len=0.3)
     mic = None
+    lead = None
     if vs:
         v0, v1 = vs[0][0], vs[-1][1]
         m0 = np.floor((v0 - 0.5) / GRID) * GRID
+        if m0 < cut0 and v0 > pause0:
+            # голос вступает раньше гитары (затакт, «Долгая дорога в Дублин»: голос 0:02.5, удар 0:03.4) -
+            # общая точка по голосу, иначе рез по гитаре съест первый слог
+            lead = v0; cut0 = max(m0, pause0)
         m1 = v1 + 0.6
         mic = (max(m0, cut0) if m0 - cut0 >= 1 else cut0, min(m1, cut1) if cut1 - m1 >= 1 else cut1, v0, v1)
-    return dict(cut0=cut0, at=at, false=false, pause0=pause0, cut1=cut1, fade=fade, why=why, buzz=buzz,
+    return dict(cut0=cut0, at=at, lead=lead, false=false, pause0=pause0, cut1=cut1, fade=fade, why=why, buzz=buzz,
                 level=eg[i + 1] if i + 1 < len(eg) else eg[i], tail=tail, mic=mic, stop=take.dur - cut1)
 
 
@@ -253,7 +258,8 @@ def main():
         print("\n== предложение (время файла)")
         for s, e in p['false']:
             print(f"фальстарт {ms(s)}-{ms(e)} ({e - s:.1f} с), пауза после него до {ms(p['at'])}")
-        print(f"начало: рез {ms(p['cut0'])}, атака первого удара {ms(p['at'])}; гитара и голос одной точкой, фейд 10 мс")
+        lead = f", голос раньше - с {ms(p['lead'])}, рез по нему" if p['lead'] is not None else ''
+        print(f"начало: рез {ms(p['cut0'])}, атака первого удара {ms(p['at'])}{lead}; гитара и голос одной точкой, фейд 10 мс")
         print(f"конец гитары: рез {ms(p['cut1'])} (гитара {p['level']:.0f} dBFS, пол {take.gfloor:.0f}), "
               f"фейд {p['fade']:.2f} с - {p['why']}; до стопа остаётся {p['stop']:.1f} с")
         if p['tail']:

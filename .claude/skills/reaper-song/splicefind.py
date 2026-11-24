@@ -80,7 +80,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('folder'); ap.add_argument('--rpp')
     ap.add_argument('--gap', type=float, default=1.5); ap.add_argument('--top', type=int, default=5)
+    # повтор мимо соседа: R3 переигрывает то же место, что R2, - резать R1 -> R3, выкинув R2 целиком
+    # («Долгая дорога в Дублин»: --pause 3:02 --shift 45.65 --until 2:37)
+    ap.add_argument('--pause', help='разобрать только паузу, которая содержит это время таймлайна (с или м:сс)')
+    ap.add_argument('--shift', type=float, help='сдвиг повтор - оригинал, с: подсказка, голосуют только сдвиги в пределах 0.5 с от неё')
+    ap.add_argument('--until', help='оригинал сравнивать только до этого времени таймлайна (с или м:сс)')
+    ap.add_argument('--voice', type=float, default=8, help='голос перед ударом не выше пролаза гитары + столько dB')
     a = ap.parse_args()
+    sec = lambda s: None if s is None else (int(s.split(':')[0]) * 60 + float(s.split(':')[1]) if ':' in s else float(s))
+    a.pause, a.until = sec(a.pause), sec(a.until)
     rpp = a.rpp or latest_rpp(a.folder)
     _, tracks = parse_rpp(open(rpp, encoding='utf-8', errors='replace').read())
     g, sr, base = load(a.folder, tracks, 'guitar')
@@ -119,15 +127,20 @@ def main():
     w = int(0.001 * sr)
     Ed = 20 * np.log10(np.sqrt(np.convolve(gh ** 2, np.ones(w) / w, 'same')) + 1e-9)
 
+    if a.pause is not None:
+        gaps = [(gs, ge) for gs, ge in gaps if T(gs) - 0.5 <= a.pause <= T(ge) + 0.5]
+        if not gaps: sys.exit(f"паузы около {mmss(a.pause)} нет")
     for gs, ge in gaps:
         print(f"\n== пауза {mmss(T(gs))}-{mmss(T(ge))} ({ge - gs:.1f} с)")
-        # 2. сдвиг голосованием окон голоса
+        # 2. сдвиг голосованием окон голоса; --shift - подсказка, голосуют только сдвиги в пределах 0.5 с от неё
         qn = int(3 * fps); votes = []
         for kq in range(12):
             q0 = ge + 0.5 + kq * 1.5
             qa = int(q0 * fps)
             if qa + qn > Lm.shape[1]: break
             lo, hi = int(max(0, gs - 180) * fps), int((gs - 3) * fps)
+            if a.shift is not None:
+                lo, hi = max(lo, int((q0 - a.shift - 0.5) * fps)), min(hi, int((q0 - a.shift + 0.5) * fps))
             if hi <= lo: break
             Q = Lm[:, qa:qa + qn]; Qn = (Q - Q.mean()) / Q.std()
             best = max(((float(np.mean(Qn * ((W := Lm[:, s:s + qn]) - W.mean()) / W.std())), s) for s in range(lo, hi, 2)))
@@ -140,43 +153,54 @@ def main():
         print(f"сдвиг {off:.3f} с: {len(good)} из {len(votes)} окон голоса, сходство {np.mean([c for _, c in good]):.2f}")
         others = sorted({round(o, 1) for o, c in votes if abs(o - off) >= 0.15 and c > 0.8})
         if others: print("  ложные кандидаты (та же мелодия в другом месте):", ", ".join(f"{o:.1f}" for o in others))
-        # 3. совпадение вдоль перекрытия
-        o0 = ge - off; nw = int(2 * fps); rows = []
-        for t in np.arange(max(0, o0), gs - 2, 1.0):
-            rows.append((t, sim(Lg, int((t + off) * fps), int(t * fps), nw), sim(Lm, int((t + off) * fps), int(t * fps), nw)))
-        ok_end = None
-        for t, sg, sm in rows:
-            if sm >= 0.8: ok_end = t + 2
-        print(f"повтор начат с места оригинала {mmss(T(o0))}")
-        print("  ориг   гитара голос")
-        for t, sg, sm in rows:
-            print(f"  {mmss(T(t)):>5}   {sg:.2f}   {sm:.2f}{'  <- голос не совпадает' if sm < 0.8 else ''}")
-        if ok_end is None:
-            print("голос нигде не совпал на 0.8 - разметка нужна человеку"); continue
-        print(f"голос совпадает до {mmss(T(ok_end))}, неудача после; рез ставить раньше")
-        # 4. кандидаты
-        A_ = attacks(Ed, sr, o0 + 1.0, ok_end - 0.3)
-        B_ = attacks(Ed, sr, o0 + off + 0.7, ok_end + off)
-        cands = []
-        for ta, sa in A_:
-            mt = [(abs(tb - ta - off), tb, sb) for tb, sb in B_ if abs(tb - ta - off) < 0.06]
-            if not mt: continue
-            _, tb, sb = min(mt)
-            mo, mp = rms_db(m, sr, ta - 0.05, ta), rms_db(m, sr, tb - 0.05, tb)
-            dt = rms_db(g, sr, ta - 0.08, ta) - rms_db(g, sr, tb - 0.08, tb)
-            if min(sa, sb) < 10 or max(mo, mp) > bleed + 8: continue
-            score = min(sa, sb) - 2 * abs(dt) - 0.5 * (max(mo, mp) - bleed)
-            cands.append((score, ta, tb, sa, sb, mo, mp, dt))
-        if not cands:
-            print("нет удара, где голос молчит в обеих версиях и атака сильная - разметка нужна человеку"); continue
-        cands.sort(reverse=True)
-        print("точки реза (атака оригинала -> та же в повторе):")
-        print("  ориг        повтор      атака о/п dB  голос до удара о/п     хвост гитары о-п")
-        for sc, ta, tb, sa, sb, mo, mp, dt in cands[:a.top]:
-            print(f"  {mm(T(ta))}  {mm(T(tb))}   {sa:3.0f} / {sb:<3.0f}     {mo:6.1f} / {mp:<6.1f} dBFS   {dt:+.1f} dB")
-        _, ta, tb = cands[0][:3]
-        print(f"лучшая: bash splice.sh \"<часть имени>.rpp\" {T(ta):.3f} {T(tb):.3f}"
-              f"  (вырезается {tb - ta:.2f} с, громкость повтора о-п у реза {rms_db(g, sr, ta - 3, ta) - rms_db(g, sr, tb - 3, tb):+.1f} dB гитара)")
+        o0 = ge - off; nw = int(2 * fps)
+        ok_end = compare(o0, off, gs, nw, a.until, base, T, Lg, Lm, fps)
+        if ok_end is not None:
+            cuts(o0, off, ok_end, Ed, sr, m, g, bleed, a.top, T, a.voice)
+
+
+def compare(o0, off, gs, nw, until, base, T, Lg, Lm, fps):
+    """3. Совпадение вдоль перекрытия; конец совпадения голоса (время файла) или None."""
+    end = gs - 2 if until is None else min(gs - 2, until - base)
+    rows = [(t, sim(Lg, int((t + off) * fps), int(t * fps), nw), sim(Lm, int((t + off) * fps), int(t * fps), nw))
+            for t in np.arange(max(0, o0), end, 1.0)]
+    ok_end = None
+    for t, sg, sm in rows:
+        if sm >= 0.8: ok_end = t + 2
+    print(f"повтор начат с места оригинала {mmss(T(o0))}")
+    print("  ориг   гитара голос")
+    for t, sg, sm in rows:
+        print(f"  {mmss(T(t)):>5}   {sg:.2f}   {sm:.2f}{'  <- голос не совпадает' if sm < 0.8 else ''}")
+    if ok_end is None:
+        print("голос нигде не совпал на 0.8 - разметка нужна человеку"); return None
+    print(f"голос совпадает до {mmss(T(ok_end))}, неудача после; рез ставить раньше")
+    return ok_end
+
+
+def cuts(o0, off, ok_end, Ed, sr, m, g, bleed, top, T, voice=8):
+    """4. Кандидаты: тот же удар гитары в обеих версиях, голос молчит, атака сильная."""
+    A_ = attacks(Ed, sr, o0 + 1.0, ok_end - 0.3)
+    B_ = attacks(Ed, sr, o0 + off + 0.7, ok_end + off)
+    cands = []
+    for ta, sa in A_:
+        mt = [(abs(tb - ta - off), tb, sb) for tb, sb in B_ if abs(tb - ta - off) < 0.06]
+        if not mt: continue
+        _, tb, sb = min(mt)
+        mo, mp = rms_db(m, sr, ta - 0.05, ta), rms_db(m, sr, tb - 0.05, tb)
+        dt = rms_db(g, sr, ta - 0.08, ta) - rms_db(g, sr, tb - 0.08, tb)
+        if min(sa, sb) < 10 or max(mo, mp) > bleed + voice: continue
+        score = min(sa, sb) - 2 * abs(dt) - 0.5 * (max(mo, mp) - bleed)
+        cands.append((score, ta, tb, sa, sb, mo, mp, dt))
+    if not cands:
+        print("нет удара, где голос молчит в обеих версиях и атака сильная - разметка нужна человеку"); return
+    cands.sort(reverse=True)
+    print("точки реза (атака оригинала -> та же в повторе):")
+    print("  ориг        повтор      атака о/п dB  голос до удара о/п     хвост гитары о-п")
+    for sc, ta, tb, sa, sb, mo, mp, dt in cands[:top]:
+        print(f"  {mm(T(ta))}  {mm(T(tb))}   {sa:3.0f} / {sb:<3.0f}     {mo:6.1f} / {mp:<6.1f} dBFS   {dt:+.1f} dB")
+    _, ta, tb = cands[0][:3]
+    print(f"лучшая: bash splice.sh \"<часть имени>.rpp\" {T(ta):.3f} {T(tb):.3f}"
+          f"  (вырезается {tb - ta:.2f} с, громкость повтора о-п у реза {rms_db(g, sr, ta - 3, ta) - rms_db(g, sr, tb - 3, tb):+.1f} dB гитара)")
 
 
 if __name__ == '__main__':
