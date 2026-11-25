@@ -73,6 +73,18 @@ local ok, err = pcall(function()
     reaper.SetMediaItemInfo_Value(it, "D_POSITION", reaper.GetMediaItemInfo_Value(it, "D_POSITION") - delta)
   end
   if #shift > 0 then out("сдвинуто айтемов после повтора", #shift) end
+  -- регион этого выреза (от атаки до атаки) и регионы-кандидаты, начатые внутри вырезанного, - удалить
+  -- (со слов пользователя 25.11: после выреза регионы вырезов не нужны)
+  local del, j = {}, 0
+  while true do
+    local r, isrgn, mpos, rend, mname, num = reaper.EnumProjectMarkers(j)
+    if r == 0 then break end
+    if isrgn and ((math.abs(mpos - A.ta) < 0.01 and math.abs(rend - A.tb) < 0.01) or (mpos > A.ta and mpos < A.tb)) then
+      del[#del + 1] = {num, mname}
+    end
+    j = j + 1
+  end
+  for _, d in ipairs(del) do reaper.DeleteProjectMarker(0, d[1], true); out("регион выреза удалён:", d[2]) end
   -- маркеры после повтора - за ним, внутри вырезанного - предупредить
   local n, idx = 0, 0
   while true do
