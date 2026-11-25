@@ -351,6 +351,46 @@ def report_raw(t, x):
         print(f"стык {mmss(it['pos'])}: перекрытие {max(-gap, 0.0) * 1000 + 0.0:.0f} мс, фейды {it_prev['fo'] * 1000:.0f}/{it['fi'] * 1000:.0f} мс; "
               f"{dip}; уровень 2 с до/после {b2:.1f}/{a2:.1f}")
 
+def retakes(g, m, gfiles, mfiles, gap=1.0, w=0.05):
+    """Паузы на обеих сырых дорожках дольше gap внутри песни - признак переигранного куска (врезки).
+    Задуманная тишина на гитаре и голосе сразу дольше секунды бывает очень редко (со слов пользователя 25.11);
+    «Долгая дорога в Дублин» 24.11: три такие паузы, все - переигрывания. Тишина как в splicefind.py: обе дорожки
+    не выше пола + 10 dB. Пол - по исходным файлам дублей (2-й перцентиль окон): в обрезанном проекте тишины почти нет,
+    и перцентиль таймлайна попадает в тихую музыку. Края песни - участки игры на 20 dB над полом длиннее 0.5 с:
+    щелчок старта или стопа их не сдвигает."""
+    def floor(files):
+        v = []
+        for f in files:
+            x, _ = sf.read(f, always_2d=True)
+            e = frames(x.mean(1), w); v.append(e[e > -150])
+        v = np.concatenate(v) if v else np.array([])
+        return np.percentile(v, 2) if len(v) else -150
+    eg, em = frames(g, w), frames(m, w)
+    fg, fm = floor(gfiles), floor(mfiles)
+    def runs(mask):
+        r, i = [], 0
+        while i < len(mask):
+            if mask[i]:
+                j = i
+                while j < len(mask) and mask[j]: j += 1
+                r.append([i, j]); i = j
+            else:
+                i += 1
+        return r
+    play = [r for r in runs((eg > fg + 20) | (em > fm + 20)) if (r[1] - r[0]) * w >= 0.5]
+    if not play: return "паузы: игры не видно"
+    lo, hi = play[0][0], play[-1][1]
+    q = (eg <= fg + 10) & (em <= fm + 10)
+    qs = []
+    for s, e in runs(q[lo:hi]):
+        if qs and (s - qs[-1][1]) * w < 0.3: qs[-1][1] = e   # щелчок посреди паузы её не делит
+        else: qs.append([s, e])
+    long_ = [((lo + s) * w, (lo + e) * w) for s, e in qs if (e - s) * w >= gap]
+    if not long_: return f"паузы на гитаре и голосе сразу дольше {gap:g} с внутри песни: нет"
+    return (f"паузы на гитаре и голосе сразу дольше {gap:g} с: " + ", ".join(f"{mmss(s)} ({e - s:.1f} с)" for s, e in long_)
+            + " - похоже на переигранные куски: splicefind.py (раздел «Врезка»); тишина бывает и задумана - спросить")
+
+
 def main():
     global meter
     ap = argparse.ArgumentParser(); ap.add_argument('dir'); ap.add_argument('--rpp'); ap.add_argument('--wav')
@@ -411,6 +451,8 @@ def main():
                 bleed = np.zeros(len(vr), bool); bleed[:len(d)] = ga & (d < couple + 10)
                 sing &= ~bleed
                 print(f"пролаз гитары в mic: сырой mic ниже гитары на {-couple:.0f} dB без голоса; без голоса {bleed.mean() * 100:.0f}% времени")
+            tf = lambda n: sorted({os.path.join(a.dir, it['file']) for t in tracks if t['name'] == n for it in t['items'] if it.get('file')})
+            print(retakes(raw[gname][:L2, 0], raw[voc][:L2, 0], tf(gname), tf(voc)))
         parts = []
         for s in range(0, len(vr), 50):
             m = sing[s:s + 50]
