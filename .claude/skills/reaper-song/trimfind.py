@@ -276,8 +276,10 @@ def main():
         if p['mic']:
             print(f"  голос: начало {ms(ms0)} ({d(ms0, p['mic'][0])}), конец {ms(ms1)} ({d(ms1, p['mic'][1])})")
         mb_ = p['mic'][:2] if p['mic'] else (p['cut0'], p['cut1'])
-        print(f"\nприменить: bash trim.sh \"{os.path.basename(path)}\" \"{gname}={p['cut0']:.3f}-{p['cut1']:.3f},{p['fade']:.2f}\" "
-              f"\"{mname}={mb_[0]:.3f}-{mb_[1]:.3f}\"")
+        args = (f"\"{os.path.basename(path)}\" \"{gname}={p['cut0']:.3f}-{p['cut1']:.3f},{p['fade']:.2f}\" "
+                f"\"{mname}={mb_[0]:.3f}-{mb_[1]:.3f}\"")
+        print(f"\nразметить: bash trim.sh --mark {args}")
+        print(f"применить: bash trim.sh {args}")
         if a.preview:
             mb = mb_
             spots = [s for s in (

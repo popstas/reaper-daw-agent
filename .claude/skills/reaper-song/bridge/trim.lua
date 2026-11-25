@@ -15,7 +15,7 @@ while true do
 end
 if not proj then error("нет открытой вкладки с «" .. A.proj .. "»") end
 reaper.SelectProjectInstance(proj)
-if reaper.IsProjectDirty(0) == 1 then error("в проекте несохранённые правки, сначала сохранить: " .. path) end
+if reaper.IsProjectDirty(0) == 1 and not A.mark then error("в проекте несохранённые правки, сначала сохранить: " .. path) end
 out("project", path)
 reaper.Main_OnCommand(40101, 0)   -- медиа онлайн: без фокуса окна REAPER его отключает, длина источника тогда 0
 local function fmt(t) local s = t < 0 and "-" or ""; t = math.abs(t); return string.format("%s%d:%06.3f", s, math.floor(t / 60), t % 60) end
@@ -65,6 +65,38 @@ for _, s in ipairs(A.specs) do
   if l == f then p.newlen = p.lastlen end
   table.insert(plan, p); firsts[f.it] = p
 end
+-- маркеры будущих резов: имя начинается с MARK, обычный trim.sh их удаляет (со слов пользователя 25.11)
+local MARK = "рез "
+local function is_mark(isrgn, name) return not isrgn and name:sub(1, #MARK) == MARK end
+if A.mark then
+  local dirty0 = reaper.IsProjectDirty(0)
+  local pts = {}   -- {время таймлайна, подпись, треки}
+  local function add(tl, what, name)
+    for _, q in ipairs(pts) do
+      if math.abs(q.tl - tl) < 0.001 and q.what == what then q.names = q.names .. "+" .. name; return end
+    end
+    table.insert(pts, {tl = tl, what = what, names = name})
+  end
+  for _, p in ipairs(plan) do
+    add(p.f.pos + (p.s0 - p.f.so), "начало", p.name)
+    add(p.l.pos + (p.s1 - p.l.so), p.fo and string.format("конец, фейд %.2f с", p.fo) or "конец", p.name)
+  end
+  reaper.Undo_BeginBlock()
+  local _, nm, nr = reaper.CountProjectMarkers(0)
+  for k = nm + nr - 1, 0, -1 do
+    local _, isrgn, _, _, name = reaper.EnumProjectMarkers(k)
+    if is_mark(isrgn, name) then reaper.DeleteProjectMarkerByIndex(0, k) end
+  end
+  for _, q in ipairs(pts) do
+    local name = MARK .. q.names .. ": " .. q.what
+    reaper.AddProjectMarker(0, false, q.tl, 0, name, -1); out("маркер", fmt(q.tl), name)
+  end
+  reaper.Undo_EndBlock("reaper-song trim markers", -1)
+  reaper.UpdateArrange()
+  if dirty0 == 0 then reaper.Main_SaveProject(0, false); out("saved, dirty", reaper.IsProjectDirty(0))
+  else out("проект был с несохранёнными правками - не сохранён") end
+  return
+end
 local t = 0
 if A.zero then
   t = math.huge
@@ -106,6 +138,11 @@ local ok, err = pcall(function()
     end
     out("trim", p.name, was .. " -> " .. string.format("файл %s-%s, таймлайн %s, фейд %.2f", fmt(p.s0), fmt(p.s1),
       fmt(p.newpos - t), reaper.GetMediaItemInfo_Value(l.it, "D_FADEOUTLEN")))
+  end
+  local _, nm0, nr0 = reaper.CountProjectMarkers(0)
+  for k = nm0 + nr0 - 1, 0, -1 do
+    local _, isrgn, _, _, name = reaper.EnumProjectMarkers(k)
+    if is_mark(isrgn, name) then reaper.DeleteProjectMarkerByIndex(0, k); out("маркер реза удалён:", name) end
   end
   if t ~= 0 then
     local n = 0
